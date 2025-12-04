@@ -3,6 +3,21 @@ import { AppConfig, VariableModel, CompositeVariableModel, EnvironmentVariableMo
 import { getYamlReferences } from './yaml-references';
 
 /**
+ * Safely check if a value is a string that starts with a prefix.
+ * Handles the case where YAML anchors are resolved to objects instead of strings.
+ */
+function safeStartsWith(value: unknown, prefix: string): boolean {
+  return typeof value === 'string' && value.startsWith(prefix);
+}
+
+/**
+ * Safely convert a value to string, returning empty string for objects/undefined.
+ */
+function safeString(value: unknown): string {
+  return typeof value === 'string' ? value : '';
+}
+
+/**
  * Add YAML anchors (&anchor_name) to resource definitions.
  * This allows resources to be referenced later using aliases (*anchor_name).
  * 
@@ -671,7 +686,12 @@ function formatDatabaseRef(database: DatabaseModel): any {
 /**
  * Format a credential that might be a raw value, env variable, secret reference, or variable reference.
  */
-function formatCredential(value: string): any {
+function formatCredential(value: unknown): any {
+  // Handle non-string values (could be objects from resolved YAML anchors)
+  if (typeof value !== 'string') {
+    return value; // Return as-is if it's already an object
+  }
+  
   // Handle variable references (e.g., *client_id) - output as YAML alias
   if (value.startsWith('*')) {
     return createReference(value.slice(1));
@@ -857,10 +877,11 @@ export function generateYAML(config: AppConfig): string {
       yamlConfig.resources.genie_rooms = {};
       Object.entries(config.resources!.genie_rooms).forEach(([key, room]) => {
         // Check if space_id is a variable reference (starts with *)
-        let spaceIdValue: string = room.space_id;
-        if (room.space_id.startsWith('*')) {
+        const spaceIdStr = safeString(room.space_id);
+        let spaceIdValue: string = spaceIdStr;
+        if (safeStartsWith(spaceIdStr, '*')) {
           // Convert to reference marker for proper YAML alias handling
-          spaceIdValue = createReference(room.space_id.substring(1));
+          spaceIdValue = createReference(spaceIdStr.substring(1));
         }
         
         yamlConfig.resources.genie_rooms[key] = {
@@ -912,9 +933,10 @@ export function generateYAML(config: AppConfig): string {
       yamlConfig.resources.warehouses = {};
       Object.entries(config.resources!.warehouses).forEach(([key, warehouse]) => {
         // Check if warehouse_id is a variable reference (starts with *)
-        let warehouseIdValue: string = warehouse.warehouse_id;
-        if (warehouse.warehouse_id.startsWith('*')) {
-          warehouseIdValue = createReference(warehouse.warehouse_id.substring(1));
+        const warehouseIdStr = safeString(warehouse.warehouse_id);
+        let warehouseIdValue: string = warehouseIdStr;
+        if (safeStartsWith(warehouseIdStr, '*')) {
+          warehouseIdValue = createReference(warehouseIdStr.substring(1));
         }
         
         yamlConfig.resources.warehouses[key] = {

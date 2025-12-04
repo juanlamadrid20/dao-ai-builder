@@ -11,6 +11,21 @@
  * - Connections (UC connections)
  */
 import { useState, ChangeEvent } from 'react';
+
+/**
+ * Safely check if a value is a string that starts with a prefix.
+ * Handles the case where YAML anchors are resolved to objects instead of strings.
+ */
+function safeStartsWith(value: unknown, prefix: string): boolean {
+  return typeof value === 'string' && value.startsWith(prefix);
+}
+
+/**
+ * Safely convert a value to string, returning empty string for objects/undefined.
+ */
+function safeString(value: unknown): string {
+  return typeof value === 'string' ? value : '';
+}
 import { 
   MessageSquare, 
   Table2, 
@@ -361,7 +376,7 @@ function FallbackItem({
       ) : (
         <div className="space-y-2">
           <StatusSelect
-            value={fallback.startsWith('ref:') ? '' : fallback}
+            value={safeStartsWith(fallback, 'ref:') ? '' : safeString(fallback)}
             onChange={onUpdate}
             options={[
               { value: '', label: 'Select an endpoint...' },
@@ -369,7 +384,7 @@ function FallbackItem({
             ]}
             placeholder="Select an endpoint..."
           />
-          {fallback && !fallback.startsWith('ref:') && (
+          {fallback && !safeStartsWith(fallback, 'ref:') && (
             <div className="p-2 bg-slate-800/50 rounded text-xs">
               <span className="text-green-400">YAML output:</span>{' '}
               <code className="text-slate-300">{fallback}</code>
@@ -806,8 +821,9 @@ function LLMsPanel() {
                 {formData.fallbacks.length > 0 ? (
                   <div className="space-y-3">
                     {formData.fallbacks.map((fallback, index) => {
-                      const isReference = fallback.startsWith('ref:');
-                      const refKey = isReference ? fallback.slice(4) : null;
+                      const fallbackStr = safeString(fallback);
+                      const isReference = safeStartsWith(fallbackStr, 'ref:');
+                      const refKey = isReference ? fallbackStr.slice(4) : null;
                       const hasConfiguredLLMs = Object.keys(llms).filter(k => k !== editingKey && k !== formData.name).length > 0;
                       
                       return (
@@ -876,10 +892,10 @@ function GenieRoomsPanel({ showForm, setShowForm, editingKey, setEditingKey, onC
 
   const handleEdit = (key: string) => {
     const room = genieRooms[key];
-    const spaceId = room.space_id || '';
+    const spaceId = safeString(room.space_id);
     
     // Detect if space_id is a variable reference (starts with *)
-    const isVariable = spaceId.startsWith('*');
+    const isVariable = safeStartsWith(spaceId, '*');
     const isInList = genieSpaces?.some(s => s.space_id === spaceId);
     
     setSpaceIdSource(isVariable ? 'variable' : (isInList ? 'select' : 'manual'));
@@ -1224,16 +1240,17 @@ function WarehousesPanel({ showForm, setShowForm, editingKey, setEditingKey, onC
 
   const handleEdit = (key: string) => {
     const wh = warehouses[key];
+    const warehouseId = safeString(wh.warehouse_id);
     // Detect if the warehouse_id is a variable reference
-    const isVariableRef = wh.warehouse_id.startsWith('__REF__');
-    const variableName = isVariableRef ? wh.warehouse_id.substring(7) : '';
-    const directId = isVariableRef ? '' : wh.warehouse_id;
+    const isVariableRef = safeStartsWith(warehouseId, '__REF__');
+    const variableName = isVariableRef ? warehouseId.substring(7) : '';
+    const directId = isVariableRef ? '' : warehouseId;
     
     // Determine source: if variable ref -> variable, if matches a known warehouse -> select, else manual
     let source: WarehouseIdSource = 'manual';
     if (isVariableRef) {
       source = 'variable';
-    } else if (sqlWarehouses?.some(w => w.id === wh.warehouse_id)) {
+    } else if (sqlWarehouses?.some(w => w.id === warehouseId)) {
       source = 'select';
     }
     
@@ -1326,10 +1343,11 @@ function WarehousesPanel({ showForm, setShowForm, editingKey, setEditingKey, onC
       {Object.keys(warehouses).length > 0 && (
         <div className="space-y-2 mb-4">
           {Object.entries(warehouses).map(([key, wh]) => {
-            const isVariableRef = wh.warehouse_id.startsWith('__REF__');
+            const warehouseId = safeString(wh.warehouse_id);
+            const isVariableRef = safeStartsWith(warehouseId, '__REF__');
             const displayId = isVariableRef 
-              ? `$${wh.warehouse_id.substring(7)}` 
-              : `${wh.warehouse_id?.substring(0, 12)}...`;
+              ? `$${warehouseId.substring(7)}` 
+              : `${warehouseId?.substring(0, 12)}...`;
             return (
               <div key={key} className="flex items-center justify-between p-3 bg-slate-800/50 rounded-lg border border-slate-700">
                 <div className="flex items-center space-x-3">
@@ -2943,8 +2961,11 @@ function DatabasesPanel({ showForm, setShowForm, editingKey, setEditingKey, onCl
   const handleEdit = (key: string) => {
     const db = databases[key];
     if (db) {
-      const isVariableRef = (val?: string): boolean => val ? val.startsWith('*') : false;
-      const getVarSlice = (val?: string): string => val && val.startsWith('*') ? val.slice(1) : '';
+      const isVariableRef = (val?: unknown): boolean => safeStartsWith(val, '*');
+      const getVarSlice = (val?: unknown): string => {
+        const str = safeString(val);
+        return str.startsWith('*') ? str.slice(1) : '';
+      };
       
       setFormData({
         refName: key,
@@ -2959,16 +2980,16 @@ function DatabasesPanel({ showForm, setShowForm, editingKey, setEditingKey, onCl
         clientIdSource: isVariableRef(db.client_id) ? 'variable' : 'manual',
         clientSecretSource: isVariableRef(db.client_secret) ? 'variable' : 'manual',
         workspaceHostSource: isVariableRef(db.workspace_host) ? 'variable' : 'manual',
-        client_id: isVariableRef(db.client_id) ? '' : (db.client_id || ''),
-        client_secret: isVariableRef(db.client_secret) ? '' : (db.client_secret || ''),
-        workspace_host: isVariableRef(db.workspace_host) ? '' : (db.workspace_host || ''),
+        client_id: isVariableRef(db.client_id) ? '' : safeString(db.client_id),
+        client_secret: isVariableRef(db.client_secret) ? '' : safeString(db.client_secret),
+        workspace_host: isVariableRef(db.workspace_host) ? '' : safeString(db.workspace_host),
         clientIdVariable: getVarSlice(db.client_id),
         clientSecretVariable: getVarSlice(db.client_secret),
         workspaceHostVariable: getVarSlice(db.workspace_host),
         userSource: isVariableRef(db.user) ? 'variable' : 'manual',
         passwordSource: isVariableRef(db.password) ? 'variable' : 'manual',
-        user: isVariableRef(db.user) ? '' : (db.user || ''),
-        password: isVariableRef(db.password) ? '' : (db.password || ''),
+        user: isVariableRef(db.user) ? '' : safeString(db.user),
+        password: isVariableRef(db.password) ? '' : safeString(db.password),
         userVariable: getVarSlice(db.user),
         passwordVariable: getVarSlice(db.password),
         on_behalf_of_user: db.on_behalf_of_user || false,
@@ -3825,7 +3846,8 @@ function VectorStoresPanel({ showForm, setShowForm, editingKey, setEditingKey, o
         
         if (typeof sourcePath.volume === 'string') {
           // It's a reference - find the volume to get schema info
-          const refName = sourcePath.volume.startsWith('*') ? sourcePath.volume.slice(1) : sourcePath.volume;
+          const volStr = safeString(sourcePath.volume);
+          const refName = volStr.startsWith('*') ? volStr.slice(1) : volStr;
           const referencedVolume = configuredVolumes[refName];
           if (referencedVolume) {
             volumeCatalog = referencedVolume.schema?.catalog_name || '';
@@ -3870,7 +3892,8 @@ function VectorStoresPanel({ showForm, setShowForm, editingKey, setEditingKey, o
         let volumeName = '';
         
         if (typeof checkpointPath.volume === 'string') {
-          const refName = checkpointPath.volume.startsWith('*') ? checkpointPath.volume.slice(1) : checkpointPath.volume;
+          const volStr = safeString(checkpointPath.volume);
+          const refName = volStr.startsWith('*') ? volStr.slice(1) : volStr;
           const referencedVolume = configuredVolumes[refName];
           if (referencedVolume) {
             volumeCatalog = referencedVolume.schema?.catalog_name || '';
