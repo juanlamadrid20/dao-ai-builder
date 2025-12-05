@@ -1,5 +1,5 @@
 import { useState, ChangeEvent } from 'react';
-import { Plus, Trash2, Edit2, Search, Layers, Filter, RefreshCw } from 'lucide-react';
+import { Plus, Trash2, Edit2, Search, Layers, Filter, RefreshCw, X } from 'lucide-react';
 import { useConfigStore } from '@/stores/configStore';
 import { RetrieverModel, SearchParametersModel, RerankParametersModel } from '@/types/dao-ai-types';
 import Button from '../ui/Button';
@@ -8,6 +8,34 @@ import Select from '../ui/Select';
 import Card from '../ui/Card';
 import Modal from '../ui/Modal';
 import Badge from '../ui/Badge';
+
+// Filter operators supported by Databricks Vector Search
+const FILTER_OPERATORS = [
+  { value: '', label: '= (equals)' },
+  { value: ' NOT', label: '!= (not equals)' },
+  { value: ' <', label: '< (less than)' },
+  { value: ' <=', label: '<= (less or equal)' },
+  { value: ' >', label: '> (greater than)' },
+  { value: ' >=', label: '>= (greater or equal)' },
+  { value: ' LIKE', label: 'LIKE (pattern match)' },
+];
+
+// Column source type for filters
+type ColumnSource = 'select' | 'manual';
+
+// Interface for a single filter entry
+interface FilterEntry {
+  id: string;
+  columnSource: ColumnSource;
+  column: string;
+  operator: string;
+  value: string;
+}
+
+// Generate unique ID for filter entries
+function generateFilterId(): string {
+  return `filter_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
+}
 
 // Helper function to generate a reference name from a display name
 function generateRefName(name: string): string {
@@ -38,6 +66,7 @@ interface FormData {
   columns: string;
   numResults: string;
   queryType: string;
+  filters: FilterEntry[];
   enableRerank: boolean;
   rerankModel: string;
   rerankTopN: string;
@@ -55,6 +84,7 @@ export default function RetrieversSection() {
     columns: '',
     numResults: '10',
     queryType: 'ANN',
+    filters: [],
     enableRerank: false,
     rerankModel: 'ms-marco-MiniLM-L-12-v2',
     rerankTopN: '',
@@ -80,6 +110,7 @@ export default function RetrieversSection() {
       columns: '',
       numResults: '10',
       queryType: 'ANN',
+      filters: [],
       enableRerank: false,
       rerankModel: 'ms-marco-MiniLM-L-12-v2',
       rerankTopN: '',
@@ -123,12 +154,57 @@ export default function RetrieversSection() {
       }
     }
     
+    // Parse existing filters from search_parameters
+    // First, get available columns from the vector store to determine column source
+    const vs = vectorStoreRef ? vectorStores[vectorStoreRef] : null;
+    const vsColumns: Set<string> = new Set();
+    if (vs) {
+      if (vs.columns && Array.isArray(vs.columns)) {
+        vs.columns.forEach(col => vsColumns.add(col));
+      }
+      if (vs.embedding_source_column) vsColumns.add(vs.embedding_source_column);
+      if (vs.primary_key) vsColumns.add(vs.primary_key);
+      if (vs.doc_uri) vsColumns.add(vs.doc_uri);
+    }
+    
+    const filters: FilterEntry[] = [];
+    if (retriever.search_parameters?.filters) {
+      Object.entries(retriever.search_parameters.filters).forEach(([filterKey, value]) => {
+        // Parse the filter key to extract column name and operator
+        // Format: "column_name" or "column_name OPERATOR"
+        let column = filterKey;
+        let operator = '';
+        
+        // Check for known operators in the key
+        const operatorPatterns = [' NOT', ' <=', ' >=', ' <', ' >', ' LIKE'];
+        for (const op of operatorPatterns) {
+          if (filterKey.endsWith(op)) {
+            column = filterKey.slice(0, -op.length);
+            operator = op;
+            break;
+          }
+        }
+        
+        // Determine if column is from the available list or manual
+        const columnSource: ColumnSource = vsColumns.has(column) ? 'select' : 'manual';
+        
+        filters.push({
+          id: generateFilterId(),
+          columnSource,
+          column,
+          operator,
+          value: String(value),
+        });
+      });
+    }
+    
     setFormData({
       refName: key,
       vectorStoreRef,
       columns: retriever.columns?.join(', ') || '',
       numResults: retriever.search_parameters?.num_results?.toString() || '10',
       queryType: retriever.search_parameters?.query_type || 'ANN',
+      filters,
       enableRerank,
       rerankModel,
       rerankTopN,
@@ -154,10 +230,29 @@ export default function RetrieversSection() {
       .map(c => c.trim())
       .filter(c => c.length > 0);
 
+    // Build filters object from filter entries
+    const filtersObj: Record<string, string | number | boolean> = {};
+    formData.filters.forEach(filter => {
+      if (filter.column && filter.value) {
+        // Build the filter key: "column_name" or "column_name OPERATOR"
+        const filterKey = filter.operator ? `${filter.column}${filter.operator}` : filter.column;
+        // Try to parse value as number or boolean
+        let parsedValue: string | number | boolean = filter.value;
+        if (filter.value === 'true') {
+          parsedValue = true;
+        } else if (filter.value === 'false') {
+          parsedValue = false;
+        } else if (!isNaN(Number(filter.value)) && filter.value.trim() !== '') {
+          parsedValue = Number(filter.value);
+        }
+        filtersObj[filterKey] = parsedValue;
+      }
+    });
+
     // Build search parameters
     const searchParameters: SearchParametersModel = {
       num_results: parseInt(formData.numResults) || 10,
-      filters: {},
+      filters: Object.keys(filtersObj).length > 0 ? filtersObj : undefined,
       query_type: formData.queryType,
     };
 
@@ -226,6 +321,76 @@ export default function RetrieversSection() {
     });
   };
 
+  // Get available columns from the selected vector store
+  const getAvailableColumns = (): string[] => {
+    if (!formData.vectorStoreRef) return [];
+    const vs = vectorStores[formData.vectorStoreRef];
+    if (!vs) return [];
+    
+    // Collect columns from various sources in the vector store
+    const columns: Set<string> = new Set();
+    
+    // Add configured columns
+    if (vs.columns && Array.isArray(vs.columns)) {
+      vs.columns.forEach(col => columns.add(col));
+    }
+    
+    // Add embedding source column
+    if (vs.embedding_source_column) {
+      columns.add(vs.embedding_source_column);
+    }
+    
+    // Add primary key
+    if (vs.primary_key) {
+      columns.add(vs.primary_key);
+    }
+    
+    // Add doc_uri if present
+    if (vs.doc_uri) {
+      columns.add(vs.doc_uri);
+    }
+    
+    return Array.from(columns).sort();
+  };
+
+  const availableColumns = getAvailableColumns();
+  const hasAvailableColumns = availableColumns.length > 0;
+
+  // Filter management functions
+  const addFilter = () => {
+    setFormData(prev => ({
+      ...prev,
+      filters: [...prev.filters, { 
+        id: generateFilterId(), 
+        columnSource: hasAvailableColumns ? 'select' : 'manual',
+        column: '', 
+        operator: '', 
+        value: '' 
+      }],
+    }));
+  };
+
+  const updateFilter = (id: string, field: keyof FilterEntry, value: string) => {
+    setFormData(prev => ({
+      ...prev,
+      filters: prev.filters.map(f => {
+        if (f.id !== id) return f;
+        // When changing source, clear the column value
+        if (field === 'columnSource') {
+          return { ...f, columnSource: value as ColumnSource, column: '' };
+        }
+        return { ...f, [field]: value };
+      }),
+    }));
+  };
+
+  const removeFilter = (id: string) => {
+    setFormData(prev => ({
+      ...prev,
+      filters: prev.filters.filter(f => f.id !== id),
+    }));
+  };
+
   return (
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
@@ -282,6 +447,11 @@ export default function RetrieversSection() {
                     <Filter className="w-3 h-3 mr-1" />
                     {retriever.search_parameters?.num_results || 10} results
                   </Badge>
+                  {retriever.search_parameters?.filters && Object.keys(retriever.search_parameters.filters).length > 0 && (
+                    <Badge variant="warning">
+                      {Object.keys(retriever.search_parameters.filters).length} filter{Object.keys(retriever.search_parameters.filters).length !== 1 ? 's' : ''}
+                    </Badge>
+                  )}
                   {retriever.rerank && (
                     <Badge variant="success">
                       <RefreshCw className="w-3 h-3 mr-1" />
@@ -299,6 +469,13 @@ export default function RetrieversSection() {
                       <span className="text-slate-500">Columns:</span>{' '}
                       {retriever.columns.slice(0, 3).join(', ')}
                       {retriever.columns.length > 3 && ` +${retriever.columns.length - 3} more`}
+                    </p>
+                  )}
+                  {retriever.search_parameters?.filters && Object.keys(retriever.search_parameters.filters).length > 0 && (
+                    <p>
+                      <span className="text-slate-500">Filters:</span>{' '}
+                      {Object.entries(retriever.search_parameters.filters).slice(0, 2).map(([k, v]) => `${k}=${v}`).join(', ')}
+                      {Object.keys(retriever.search_parameters.filters).length > 2 && ` +${Object.keys(retriever.search_parameters.filters).length - 2} more`}
                     </p>
                   )}
                   {retriever.rerank && typeof retriever.rerank === 'object' && (
@@ -420,6 +597,135 @@ export default function RetrieversSection() {
                 hint="Search algorithm to use"
               />
             </div>
+          </div>
+
+          {/* Filters */}
+          <div className="space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-700 pb-2">
+              <h3 className="text-sm font-medium text-slate-300 flex items-center gap-2">
+                <Filter className="w-4 h-4" />
+                Filters (Optional)
+              </h3>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={addFilter}
+              >
+                <Plus className="w-4 h-4 mr-1" />
+                Add Filter
+              </Button>
+            </div>
+            
+            {formData.filters.length === 0 ? (
+              <div className="text-xs text-slate-500 italic py-2">
+                No filters configured. Add filters to narrow down search results based on column values.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {formData.filters.map((filter) => (
+                  <div key={filter.id} className="flex items-start gap-2 p-3 bg-slate-800/50 rounded-lg border border-slate-700">
+                    <div className="flex-1 space-y-3">
+                      {/* Row 1: Column (with toggle) and Operator */}
+                      <div className="grid grid-cols-2 gap-3">
+                        {/* Column field with source toggle */}
+                        <div>
+                          <div className="flex items-center justify-between mb-1">
+                            <label className="text-xs font-medium text-slate-400">Column</label>
+                            <div className="flex">
+                              <button
+                                type="button"
+                                onClick={() => updateFilter(filter.id, 'columnSource', 'select')}
+                                className={`px-2 py-0.5 text-[10px] rounded-l border transition-colors ${
+                                  filter.columnSource === 'select'
+                                    ? 'bg-blue-600 border-blue-600 text-white'
+                                    : 'bg-slate-800 border-slate-600 text-slate-400 hover:bg-slate-700'
+                                } ${!hasAvailableColumns ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                disabled={!hasAvailableColumns}
+                                title={hasAvailableColumns ? 'Select from available columns' : 'No columns available'}
+                              >
+                                Select
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => updateFilter(filter.id, 'columnSource', 'manual')}
+                                className={`px-2 py-0.5 text-[10px] rounded-r border-t border-r border-b transition-colors ${
+                                  filter.columnSource === 'manual'
+                                    ? 'bg-blue-600 border-blue-600 text-white'
+                                    : 'bg-slate-800 border-slate-600 text-slate-400 hover:bg-slate-700'
+                                }`}
+                              >
+                                Manual
+                              </button>
+                            </div>
+                          </div>
+                          {filter.columnSource === 'select' && hasAvailableColumns ? (
+                            <select
+                              value={filter.column}
+                              onChange={(e) => updateFilter(filter.id, 'column', e.target.value)}
+                              className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            >
+                              <option value="">Select column...</option>
+                              {availableColumns.map(col => (
+                                <option key={col} value={col}>{col}</option>
+                              ))}
+                            </select>
+                          ) : (
+                            <input
+                              type="text"
+                              value={filter.column}
+                              onChange={(e) => updateFilter(filter.id, 'column', e.target.value)}
+                              placeholder="column_name"
+                              className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            />
+                          )}
+                        </div>
+                        
+                        {/* Operator field */}
+                        <div>
+                          <label className="block text-xs font-medium text-slate-400 mb-1">Operator</label>
+                          <select
+                            value={filter.operator}
+                            onChange={(e) => updateFilter(filter.id, 'operator', e.target.value)}
+                            className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          >
+                            {FILTER_OPERATORS.map(op => (
+                              <option key={op.value} value={op.value}>{op.label}</option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+                      
+                      {/* Row 2: Value field */}
+                      <div>
+                        <label className="block text-xs font-medium text-slate-400 mb-1">Value</label>
+                        <input
+                          type="text"
+                          value={filter.value}
+                          onChange={(e) => updateFilter(filter.id, 'value', e.target.value)}
+                          placeholder="filter value"
+                          className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                        <p className="mt-1 text-xs text-slate-500">Strings, numbers, or booleans (true/false)</p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => removeFilter(filter.id)}
+                      className="mt-4 p-1.5 text-slate-400 hover:text-red-400 hover:bg-red-400/10 rounded transition-colors"
+                      title="Remove filter"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            
+            <p className="text-xs text-slate-500">
+              Filters restrict search results to rows matching the specified conditions.
+              Use column names from your source table. Values are automatically parsed as numbers or booleans when applicable.
+            </p>
           </div>
 
           {/* Reranking */}

@@ -998,11 +998,15 @@ export function generateYAML(config: AppConfig): string {
       }
       
       if (retriever.search_parameters) {
-        retrieverConfig.search_parameters = {
+        const searchParams: Record<string, any> = {
           num_results: retriever.search_parameters.num_results || 10,
-          filters: retriever.search_parameters.filters || {},
           query_type: retriever.search_parameters.query_type || 'ANN',
         };
+        // Only include filters if they have entries
+        if (retriever.search_parameters.filters && Object.keys(retriever.search_parameters.filters).length > 0) {
+          searchParams.filters = retriever.search_parameters.filters;
+        }
+        retrieverConfig.search_parameters = searchParams;
       }
       
       if (retriever.rerank) {

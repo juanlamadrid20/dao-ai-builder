@@ -386,6 +386,14 @@ function AgentModal({
         inlinePrompt = typeof editingAgent.prompt === 'string' ? editingAgent.prompt : '';
       }
       
+      const selectedToolsList = editingAgent.tools?.map((t) => 
+        Object.entries(tools).find(([, tool]) => tool.name === t.name)?.[0] || ''
+      ).filter(Boolean) || [];
+      
+      const selectedGuardrailsList = editingAgent.guardrails?.map((g) =>
+        Object.entries(guardrails).find(([, gr]) => gr.name === g.name)?.[0] || ''
+      ).filter(Boolean) || [];
+      
       const newFormData = {
         name: editingAgent.name,
         description: editingAgent.description || '',
@@ -393,17 +401,25 @@ function AgentModal({
         promptRef,
         prompt: inlinePrompt,
         handoffPrompt: editingAgent.handoff_prompt || '',
-        selectedTools: editingAgent.tools?.map((t) => 
-          Object.entries(tools).find(([, tool]) => tool.name === t.name)?.[0] || ''
-        ).filter(Boolean) || [],
-        selectedGuardrails: editingAgent.guardrails?.map((g) =>
-          Object.entries(guardrails).find(([, gr]) => gr.name === g.name)?.[0] || ''
-        ).filter(Boolean) || [],
+        selectedTools: selectedToolsList,
+        selectedGuardrails: selectedGuardrailsList,
+      };
+      
+      // Create a separate copy for initial state comparison
+      const initialData = {
+        name: editingAgent.name,
+        description: editingAgent.description || '',
+        modelKey,
+        promptRef,
+        prompt: inlinePrompt,
+        handoffPrompt: editingAgent.handoff_prompt || '',
+        selectedTools: [...selectedToolsList],
+        selectedGuardrails: [...selectedGuardrailsList],
       };
       
       setPromptSource(detectedPromptSource);
       setFormData(newFormData);
-      setInitialFormData(newFormData);
+      setInitialFormData(initialData);
       setInitialPromptSource(detectedPromptSource);
     } else {
       const defaultFormData = {
