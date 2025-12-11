@@ -256,7 +256,6 @@ export interface PromptModel {
   alias?: string;
   version?: number;
   tags?: Record<string, any>;
-  service_principal?: ServicePrincipalModel | string;  // Can be inline or reference
 }
 
 export interface PermissionModel {

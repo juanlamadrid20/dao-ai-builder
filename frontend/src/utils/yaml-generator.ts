@@ -1203,24 +1203,6 @@ export function generateYAML(config: AppConfig): string {
   if (config.prompts && Object.keys(config.prompts).length > 0) {
     yamlConfig.prompts = {};
     Object.entries(config.prompts).forEach(([key, prompt]) => {
-      // Handle service_principal reference
-      let promptServicePrincipal: any = undefined;
-      if (prompt.service_principal) {
-        if (typeof prompt.service_principal === 'string') {
-          // It's a reference string like "*my_sp"
-          const spRef = prompt.service_principal.startsWith('*') 
-            ? prompt.service_principal.slice(1) 
-            : prompt.service_principal;
-          promptServicePrincipal = createReference(spRef);
-        } else {
-          // Inline service principal object
-          promptServicePrincipal = {
-            client_id: formatCredential(prompt.service_principal.client_id),
-            client_secret: formatCredential(prompt.service_principal.client_secret),
-          };
-        }
-      }
-      
       yamlConfig.prompts[key] = {
         name: prompt.name,
         ...(prompt.schema && { schema: formatSchemaReference(prompt.schema, definedSchemas) }),
@@ -1229,7 +1211,6 @@ export function generateYAML(config: AppConfig): string {
         ...(prompt.alias && { alias: prompt.alias }),
         ...(prompt.version !== undefined && { version: prompt.version }),
         ...(prompt.tags && Object.keys(prompt.tags).length > 0 && { tags: prompt.tags }),
-        ...(promptServicePrincipal && { service_principal: promptServicePrincipal }),
       };
     });
   }

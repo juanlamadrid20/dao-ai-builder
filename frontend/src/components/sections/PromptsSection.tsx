@@ -59,13 +59,25 @@ You are a helpful assistant. Your role is to provide accurate and useful informa
 - Always prioritize user safety
 `;
 
+// Helper function to convert a string to snake_case
+function toSnakeCase(str: string): string {
+  return str
+    .trim()
+    // Insert underscore before uppercase letters and convert to lowercase
+    .replace(/([a-z])([A-Z])/g, '$1_$2')
+    .toLowerCase()
+    // Replace spaces, hyphens, and multiple underscores with single underscore
+    .replace(/[\s-]+/g, '_')
+    .replace(/_+/g, '_')
+    // Remove any characters that aren't alphanumeric or underscore
+    .replace(/[^a-z0-9_]/g, '')
+    // Remove leading/trailing underscores
+    .replace(/^_+|_+$/g, '');
+}
+
 // Helper function to generate a reference name from a prompt name
 function generateRefName(name: string): string {
-  return name
-    .toLowerCase()
-    .trim()
-    .replace(/\s+/g, '_')
-    .replace(/[^a-z0-9_]/g, '');
+  return toSnakeCase(name);
 }
 
 type SchemaSource = 'reference' | 'direct';
@@ -81,7 +93,7 @@ export default function PromptsSection() {
   
   // Global service principal for all prompt registry operations
   type AuthMode = 'none' | 'configured' | 'manual';
-  const [authMode, setAuthMode] = useState<AuthMode>('none');
+  const [authMode, setAuthMode] = useState<AuthMode>('configured');
   const [globalServicePrincipal, setGlobalServicePrincipal] = useState<string>('');
   const [manualClientId, setManualClientId] = useState<string>('');
   const [manualClientSecret, setManualClientSecret] = useState<string>('');
@@ -194,84 +206,128 @@ export default function PromptsSection() {
   // State for template loading errors
   const [templateError, setTemplateError] = useState<string | null>(null);
   
-  // Standard aliases that should always be available
-  const STANDARD_ALIASES = ['latest', 'champion', 'default'];
-  
-  // Build alias options - include standard aliases plus any from the prompt
+  // Build alias options - ordered: champion first, latest second, then others by version descending
   const aliasOptions = useMemo(() => {
     const existingAliases = promptDetails?.aliases || [];
-    // Combine standard aliases with existing ones (deduplicated)
-    const allAliases = [...new Set([...STANDARD_ALIASES, ...existingAliases])];
+    const aliasVersionMap = promptDetails?.alias_versions || {};
+    
+    if (existingAliases.length === 0) {
+      return [{ value: '', label: 'No aliases available' }];
+    }
+    
+    // Sort aliases: champion first, latest second, then others by version (descending)
+    const sortedAliases = [...existingAliases].sort((a, b) => {
+      if (a === 'champion') return -1;
+      if (b === 'champion') return 1;
+      if (a === 'latest') return -1;
+      if (b === 'latest') return 1;
+      
+      // For other aliases, sort by version number descending
+      const versionA = parseInt(aliasVersionMap[a] || '0');
+      const versionB = parseInt(aliasVersionMap[b] || '0');
+      return versionB - versionA;
+    });
     
     return [
       { value: '', label: 'Select an alias...' },
-      ...allAliases.map(alias => ({
+      ...sortedAliases.map(alias => ({
         value: alias,
-        label: alias === 'latest' ? 'latest (most recent version)' :
-               alias === 'champion' ? 'champion (production)' :
-               alias === 'default' ? 'default' :
-               existingAliases.includes(alias) ? alias : `${alias} (may not exist)`,
+        label: alias,
       })),
     ];
-  }, [promptDetails?.aliases]);
+  }, [promptDetails?.aliases, promptDetails?.alias_versions]);
 
-  // Build version options from prompt details
+  // Build version options from prompt details - only valid versions, descending order
   const versionOptions = useMemo(() => {
-    const latestVersion = promptDetails?.latest_version ? parseInt(promptDetails.latest_version) : 0;
     const versions = promptDetails?.versions || [];
     
-    // If we have versions from the API, use those
-    if (versions.length > 0) {
-      return [
-        { value: '', label: 'Select a version...' },
-        ...versions.map(v => ({
-          value: v.version,
-          label: `v${v.version}${v.aliases && v.aliases.length > 0 ? ` (${v.aliases.join(', ')})` : ''}`,
-        })),
-      ];
+    if (versions.length === 0) {
+      return [{ value: '', label: 'No versions available' }];
     }
     
-    // Otherwise, generate versions 1 to latest
-    if (latestVersion > 0) {
-      const versionList = [];
-      for (let i = latestVersion; i >= 1; i--) {
-        versionList.push({
-          value: String(i),
-          label: `v${i}${i === latestVersion ? ' (latest)' : ''}`,
-        });
-      }
-      return [
-        { value: '', label: 'Select a version...' },
-        ...versionList,
-      ];
+    // Sort versions in descending order (highest first)
+    const sortedVersions = [...versions].sort((a, b) => {
+      const versionA = parseInt(a.version) || 0;
+      const versionB = parseInt(b.version) || 0;
+      return versionB - versionA;
+    });
+    
+    return [
+      { value: '', label: 'Select a version...' },
+      ...sortedVersions.map(v => ({
+        value: v.version,
+        label: `v${v.version}${v.aliases && v.aliases.length > 0 ? ` (${v.aliases.join(', ')})` : ''}`,
+      })),
+    ];
+  }, [promptDetails?.versions]);
+  
+  // Set default selection when prompt details load
+  useEffect(() => {
+    if (!promptDetails || !formData.existingPromptFullName) return;
+    
+    // IMPORTANT: Only set defaults if promptDetails is for the currently selected prompt
+    // This prevents using stale data from a previously selected prompt
+    if (promptDetails.full_name !== formData.existingPromptFullName) return;
+    
+    const existingAliases = promptDetails.aliases || [];
+    const aliasVersionMap = promptDetails.alias_versions || {};
+    const versions = promptDetails.versions || [];
+    
+    // Determine default selection
+    let defaultAlias = '';
+    let defaultVersion = '';
+    
+    if (existingAliases.includes('champion')) {
+      // Champion exists - select it
+      defaultAlias = 'champion';
+      defaultVersion = aliasVersionMap['champion'] || '';
+    } else if (existingAliases.includes('latest')) {
+      // Latest exists - select it
+      defaultAlias = 'latest';
+      defaultVersion = aliasVersionMap['latest'] || '';
+    } else if (versions.length > 0) {
+      // No champion or latest - select highest version, leave alias empty
+      const sortedVersions = [...versions].sort((a, b) => {
+        return (parseInt(b.version) || 0) - (parseInt(a.version) || 0);
+      });
+      defaultVersion = sortedVersions[0]?.version || '';
+      defaultAlias = ''; // No alias selected
     }
     
-    return [{ value: '', label: 'No versions available' }];
-  }, [promptDetails?.versions, promptDetails?.latest_version]);
+    // Only update if different from current selection to avoid loops
+    if (defaultAlias !== formData.alias || defaultVersion !== formData.version) {
+      setFormData(prev => ({
+        ...prev,
+        alias: defaultAlias,
+        version: defaultVersion,
+      }));
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [promptDetails, formData.existingPromptFullName]);
 
   // Load template when version or alias changes
   useEffect(() => {
     if (!formData.existingPromptFullName) return;
     
-    // Get the latest version from promptDetails if available
-    const latestVersion = promptDetails?.latest_version;
+    // Wait for promptDetails to load for this specific prompt before loading template
+    // This prevents using stale version data from a previously selected prompt
+    if (!promptDetails || promptDetails.full_name !== formData.existingPromptFullName) {
+      return;
+    }
+    
+    // Don't load template if no version or alias is selected yet
+    if (!formData.version && !formData.alias) {
+      return;
+    }
     
     const loadTemplate = async () => {
       setLoadingTemplate(true);
       setTemplateError(null);
       
       try {
-        // Use version number instead of alias when possible to avoid alias issues
-        // If no version specified and no alias, default to latest version from promptDetails
-        let versionToUse: string | undefined = formData.version || undefined;
-        let aliasToUse: string | undefined = undefined;
-        
-        if (!versionToUse && !formData.alias && latestVersion) {
-          // Use the latest version number directly
-          versionToUse = latestVersion;
-        } else if (formData.alias && !versionToUse) {
-          aliasToUse = formData.alias;
-        }
+        // Use version number when available
+        const versionToUse: string | undefined = formData.version || undefined;
+        const aliasToUse: string | undefined = !versionToUse && formData.alias ? formData.alias : undefined;
         
         const result = await databricksNativeApi.getPromptTemplate(
           formData.existingPromptFullName,
@@ -308,9 +364,8 @@ export default function PromptsSection() {
     };
     
     loadTemplate();
-  // Note: servicePrincipalConfig is stable (memoized), promptDetails?.latest_version triggers reload when details are fetched
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [formData.existingPromptFullName, formData.version, formData.alias]);
+  }, [formData.existingPromptFullName, formData.version, formData.alias, promptDetails?.full_name]);
 
   // Update form when prompt details load
   useEffect(() => {
@@ -371,16 +426,19 @@ export default function PromptsSection() {
     if (selectedPrompt) {
       // Only auto-generate refName if not manually edited
       const newRefName = refNameManuallyEdited ? formData.refName : generateRefName(selectedPrompt.name);
+      // Clear version and alias - they will be populated by useEffect once promptDetails loads
       setFormData({
         ...formData,
         existingPromptFullName: fullName,
         name: selectedPrompt.name,
         refName: newRefName,
         description: selectedPrompt.description || '',
-        alias: '',  // Clear alias to let user select
-        version: selectedPrompt.latest_version || '',
+        alias: '',  // Clear - will be set by promptDetails useEffect
+        version: '',  // Clear - will be set by promptDetails useEffect
         tags: selectedPrompt.tags || {},
       });
+      // Clear any previous template error
+      setTemplateError(null);
     }
   };
 
@@ -405,16 +463,6 @@ export default function PromptsSection() {
         catalog_name = prompt.schema.catalog_name || '';
         schema_name = prompt.schema.schema_name || '';
         detectedSource = 'direct';
-      }
-    }
-    
-    // If the prompt has a service principal, set it as the global one for this session
-    if (prompt.service_principal) {
-      if (typeof prompt.service_principal === 'string') {
-        const spRef = prompt.service_principal.startsWith('*') 
-          ? prompt.service_principal.slice(1) 
-          : prompt.service_principal;
-        setGlobalServicePrincipal(spRef);
       }
     }
     
@@ -462,11 +510,8 @@ export default function PromptsSection() {
       alias: formData.alias || undefined,
       version: formData.version ? parseInt(formData.version) : undefined,
       tags: Object.keys(formData.tags).length > 0 ? formData.tags : undefined,
-      service_principal: authMode === 'configured' && globalServicePrincipal 
-        ? `*${globalServicePrincipal}` 
-        : authMode === 'manual' && manualClientId && manualClientSecret
-          ? { client_id: manualClientId, client_secret: manualClientSecret }
-          : undefined,
+      // Note: service_principal is used for authentication when fetching prompts,
+      // but should not be saved as part of the prompt configuration
     };
 
     if (editingKey) {
@@ -529,17 +574,6 @@ export default function PromptsSection() {
         
         {/* Auth Mode Toggle */}
         <div className="inline-flex rounded-lg bg-slate-900/50 p-0.5">
-          <button
-            type="button"
-            onClick={() => { setAuthMode('none'); setGlobalServicePrincipal(''); }}
-            className={`px-3 py-1.5 text-xs rounded-md font-medium transition-all duration-150 ${
-              authMode === 'none'
-                ? 'bg-violet-500/20 text-violet-400 border border-violet-500/40'
-                : 'text-slate-400 border border-transparent hover:text-slate-300'
-            }`}
-          >
-            Default
-          </button>
           <button
             type="button"
             onClick={() => setAuthMode('configured')}
@@ -612,7 +646,7 @@ export default function PromptsSection() {
         )}
         
         {/* Status indicator */}
-        {authMode !== 'none' && servicePrincipalConfig && (
+        {servicePrincipalConfig && (
           <p className="text-xs text-emerald-400">
             ✓ Custom authentication configured
           </p>
@@ -900,17 +934,53 @@ export default function PromptsSection() {
                       value={formData.alias}
                       onChange={(e: ChangeEvent<HTMLSelectElement>) => {
                         setTemplateError(null);
-                        setFormData({ ...formData, alias: e.target.value, version: '' });
+                        const selectedAlias = e.target.value;
+                        
+                        // Look up corresponding version for this alias
+                        const aliasVersionMap = promptDetails?.alias_versions;
+                        let correspondingVersion = '';
+                        
+                        if (selectedAlias && aliasVersionMap && aliasVersionMap[selectedAlias]) {
+                          correspondingVersion = aliasVersionMap[selectedAlias];
+                        } else if (selectedAlias === 'latest' && promptDetails?.latest_version) {
+                          correspondingVersion = promptDetails.latest_version;
+                        }
+                        
+                        setFormData({ 
+                          ...formData, 
+                          alias: selectedAlias, 
+                          version: correspondingVersion 
+                        });
                       }}
                       options={aliasOptions}
-                      hint="latest, champion, default, or custom alias"
+                      hint="Select an alias configured for this prompt"
                     />
                     <Select
                       label="Version"
                       value={formData.version}
                       onChange={(e: ChangeEvent<HTMLSelectElement>) => {
                         setTemplateError(null);
-                        setFormData({ ...formData, version: e.target.value, alias: '' });
+                        const selectedVersion = e.target.value;
+                        
+                        // Look up corresponding alias for this version
+                        const aliasVersionMap = promptDetails?.alias_versions;
+                        let correspondingAlias = '';
+                        
+                        if (selectedVersion && aliasVersionMap) {
+                          // Find alias that maps to this version
+                          for (const [alias, ver] of Object.entries(aliasVersionMap)) {
+                            if (ver === selectedVersion) {
+                              correspondingAlias = alias;
+                              break;
+                            }
+                          }
+                        }
+                        
+                        setFormData({ 
+                          ...formData, 
+                          version: selectedVersion, 
+                          alias: correspondingAlias 
+                        });
                       }}
                       options={versionOptions}
                       hint="Pin to a specific version number"
@@ -920,7 +990,11 @@ export default function PromptsSection() {
                   {/* Show current selection info */}
                   {(formData.alias || formData.version) && !templateError && !loadingTemplate && (
                     <p className="text-xs text-emerald-400">
-                      ✓ Using {formData.alias ? `alias: ${formData.alias}` : `version: v${formData.version}`}
+                      ✓ Using {formData.alias && formData.version 
+                        ? `alias: ${formData.alias} (v${formData.version})`
+                        : formData.alias 
+                          ? `alias: ${formData.alias}` 
+                          : `version: v${formData.version}`}
                     </p>
                   )}
                 </div>
@@ -947,7 +1021,8 @@ export default function PromptsSection() {
             placeholder="e.g., general_prompt"
             value={formData.name}
             onChange={(e: ChangeEvent<HTMLInputElement>) => {
-              const name = e.target.value;
+              // Normalize to snake_case for MLflow registry compatibility
+              const name = toSnakeCase(e.target.value);
               // Only auto-generate refName if not manually edited and not editing existing
               const shouldAutoGenerateRef = !editingKey && !refNameManuallyEdited;
               setFormData({ 
@@ -956,7 +1031,7 @@ export default function PromptsSection() {
                 refName: shouldAutoGenerateRef ? generateRefName(name) : formData.refName,
               });
             }}
-            hint="The prompt name in MLflow Prompt Registry"
+            hint="MLflow prompt name (auto-converted to snake_case)"
             required
             disabled={promptSource === 'existing' && !!formData.existingPromptFullName}
           />
@@ -1046,23 +1121,17 @@ export default function PromptsSection() {
 
           {/* MLflow Registry Options - Only for new prompts */}
           {promptSource === 'new' && (
-            <div className="grid grid-cols-2 gap-4">
+            <div>
               <Input
                 label="Alias (Optional)"
-                placeholder="e.g., production, staging"
+                placeholder="e.g., champion, production, staging"
                 value={formData.alias}
                 onChange={(e: ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, alias: e.target.value })}
-                hint="Reference a specific environment version"
+                hint="Set an alias for this prompt version (e.g., champion, default)"
               />
-              <Input
-                label="Version (Optional)"
-                type="number"
-                min="1"
-                placeholder="e.g., 1"
-                value={formData.version}
-                onChange={(e: ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, version: e.target.value })}
-                hint="Pin to specific version number"
-              />
+              <p className="text-xs text-slate-500 mt-1">
+                Version is auto-assigned when registering a new prompt. Use alias to reference specific versions.
+              </p>
             </div>
           )}
 
@@ -1082,36 +1151,38 @@ export default function PromptsSection() {
               </div>
             </div>
             
-            {/* AI Assistant Controls */}
-            <div className="flex items-center space-x-2">
-              <button
-                type="button"
-                onClick={() => setShowAiInput(!showAiInput)}
-                className="flex items-center space-x-1.5 px-3 py-1.5 text-xs rounded-lg font-medium bg-gradient-to-r from-purple-500/20 to-pink-500/20 text-purple-300 border border-purple-500/30 hover:from-purple-500/30 hover:to-pink-500/30 transition-all"
-                disabled={isGeneratingPrompt}
-              >
-                <Sparkles className="w-3.5 h-3.5" />
-                <span>AI Assistant</span>
-              </button>
-              {formData.default_template && formData.default_template !== DEFAULT_PROMPT_TEMPLATE && (
+            {/* AI Assistant Controls - only show for new prompts */}
+            {promptSource === 'new' && (
+              <div className="flex items-center space-x-2">
                 <button
                   type="button"
-                  onClick={() => handleGeneratePrompt(true)}
+                  onClick={() => setShowAiInput(!showAiInput)}
                   className="flex items-center space-x-1.5 px-3 py-1.5 text-xs rounded-lg font-medium bg-gradient-to-r from-purple-500/20 to-pink-500/20 text-purple-300 border border-purple-500/30 hover:from-purple-500/30 hover:to-pink-500/30 transition-all"
                   disabled={isGeneratingPrompt}
                 >
-                  {isGeneratingPrompt ? (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  ) : (
-                    <Sparkles className="w-3.5 h-3.5" />
-                  )}
-                  <span>Improve Prompt</span>
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>AI Assistant</span>
                 </button>
-              )}
-            </div>
+                {formData.default_template && formData.default_template !== DEFAULT_PROMPT_TEMPLATE && (
+                  <button
+                    type="button"
+                    onClick={() => handleGeneratePrompt(true)}
+                    className="flex items-center space-x-1.5 px-3 py-1.5 text-xs rounded-lg font-medium bg-gradient-to-r from-purple-500/20 to-pink-500/20 text-purple-300 border border-purple-500/30 hover:from-purple-500/30 hover:to-pink-500/30 transition-all"
+                    disabled={isGeneratingPrompt}
+                  >
+                    {isGeneratingPrompt ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Sparkles className="w-3.5 h-3.5" />
+                    )}
+                    <span>Improve Prompt</span>
+                  </button>
+                )}
+              </div>
+            )}
             
-            {/* AI Context Input */}
-            {showAiInput && (
+            {/* AI Context Input - only show for new prompts */}
+            {promptSource === 'new' && showAiInput && (
               <div className="p-3 bg-gradient-to-r from-purple-500/10 to-pink-500/10 rounded-lg border border-purple-500/30 space-y-3">
                 <div className="flex items-center space-x-2">
                   <Sparkles className="w-4 h-4 text-purple-400" />
@@ -1231,10 +1302,12 @@ export default function PromptsSection() {
             
             <Textarea
               value={formData.default_template}
-              onChange={(e) => setFormData({ ...formData, default_template: e.target.value })}
+              onChange={(e) => promptSource === 'new' && setFormData({ ...formData, default_template: e.target.value })}
               rows={10}
+              readOnly={promptSource === 'existing'}
+              className={promptSource === 'existing' ? 'bg-slate-800/50 cursor-not-allowed' : ''}
               hint={promptSource === 'existing' 
-                ? "Template loaded from MLflow registry. Changes here are local only."
+                ? "Template loaded from MLflow registry (read-only)."
                 : "Fallback template if MLflow registry is unavailable. Use {variable_name} for substitutions."
               }
             />
@@ -1294,7 +1367,7 @@ export default function PromptsSection() {
           </div>
 
           {/* Service Principal Info */}
-          {authMode !== 'none' && servicePrincipalConfig && (
+          {servicePrincipalConfig && (
             <div className="p-3 bg-violet-500/10 border border-violet-500/20 rounded-lg">
               <p className="text-xs text-violet-300">
                 {authMode === 'configured' 

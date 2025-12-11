@@ -463,6 +463,7 @@ export interface PromptDetails {
   description?: string;
   versions: PromptVersion[];
   aliases: string[];
+  alias_versions?: Record<string, string>;  // Map of alias name to version number
   tags: Record<string, string>;
   latest_version?: string;
   template?: string;

@@ -98,8 +98,9 @@ export default function Sidebar({ activeSection, onSectionChange, config }: Side
   };
 
   return (
-    <aside className="w-64 bg-slate-900 border-r border-slate-800 flex flex-col">
-      <div className="p-4">
+    <aside className="w-64 bg-slate-900 border-r border-slate-800 flex flex-col min-h-0">
+      {/* Scrollable navigation section */}
+      <div className="flex-1 overflow-y-auto min-h-0 p-4">
         <h2 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">
           Configuration
         </h2>
@@ -151,8 +152,8 @@ export default function Sidebar({ activeSection, onSectionChange, config }: Side
         </nav>
       </div>
 
-      {/* Status Summary */}
-      <div className="mt-auto p-4 border-t border-slate-800">
+      {/* Status Summary - fixed at bottom */}
+      <div className="flex-shrink-0 p-4 border-t border-slate-800">
         <div className="bg-slate-800/50 rounded-lg p-3">
           <h3 className="text-xs font-semibold text-slate-400 mb-2">Configuration Status</h3>
           <div className="space-y-1.5">

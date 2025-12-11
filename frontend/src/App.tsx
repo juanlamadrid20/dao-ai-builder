@@ -30,7 +30,7 @@ function App() {
         {/* Main Content Area */}
         <div className="flex-1 flex overflow-hidden">
           {/* Config Panel */}
-          <div className={`flex-1 overflow-hidden ${showPreview ? 'border-r border-slate-800' : ''}`}>
+          <div className={`flex-1 flex flex-col min-h-0 ${showPreview ? 'border-r border-slate-800' : ''}`}>
             <ConfigPanel activeSection={activeSection} onNavigate={setActiveSection} />
           </div>
           

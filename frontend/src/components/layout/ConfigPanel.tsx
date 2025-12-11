@@ -50,7 +50,7 @@ export default function ConfigPanel({ activeSection, onNavigate }: ConfigPanelPr
   };
 
   return (
-    <div className="h-full overflow-y-auto bg-slate-900/50">
+    <div className="flex-1 overflow-y-auto bg-slate-900/50">
       <div className="p-6 animate-fade-in">
         {renderSection()}
       </div>

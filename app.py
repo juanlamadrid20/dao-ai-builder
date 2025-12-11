@@ -1549,6 +1549,10 @@ def get_prompt_details():
     Returns prompt details including all versions, aliases, tags, and template content.
     Uses MLflow SDK: get_prompt_tags() for tags, load_prompt() for template.
     """
+    log('info', "========================================")
+    log('info', "=== GET_PROMPT_DETAILS ENDPOINT HIT ===")
+    log('info', "========================================")
+    
     # Support both GET (query params) and POST (JSON body with service principal)
     if request.method == 'POST':
         data = request.get_json() or {}
@@ -1557,6 +1561,8 @@ def get_prompt_details():
     else:
         full_name = request.args.get('name')
         service_principal = None
+    
+    log('info', f"Prompt details request: name={full_name}, has_service_principal={service_principal is not None}")
     
     if not full_name:
         return jsonify({'error': 'name parameter required'}), 400
@@ -1660,7 +1666,6 @@ def get_prompt_details():
             
             headers = {
                 'Authorization': f'Bearer {rest_token}',
-                'Content-Type': 'application/json',
             }
             
             # Keep dots unencoded as they're part of the catalog.schema.name format
@@ -1713,22 +1718,47 @@ def get_prompt_details():
                 log('warning', f"Could not get prompt metadata: {prompt_response.status_code} - {prompt_response.text}")
             
             # Then, get all versions from /prompts/{prompt-name}/versions/search
+            # NOTE: This endpoint requires POST, not GET!
             versions_url = f"{host}/api/2.0/mlflow/unity-catalog/prompts/{encoded_name}/versions/search"
-            log('info', f"Calling REST API for versions: GET {versions_url}")
-            versions_response = requests.get(versions_url, headers=headers, timeout=30)
+            log('info', f"=== VERSIONS API CALL ===")
+            log('info', f"Calling REST API for versions: POST {versions_url}")
             
-            if versions_response.status_code == 200:
-                versions_data = versions_response.json()
+            try:
+                # Use POST with empty JSON body - this is required by the API
+                versions_response = requests.post(
+                    versions_url, 
+                    headers={**headers, 'Content-Type': 'application/json'},
+                    json={},  # Empty body for search
+                    timeout=30
+                )
+                log('info', f"Versions API response status: {versions_response.status_code}")
+            except Exception as versions_err:
+                log('error', f"Versions API request failed with exception: {versions_err}")
+                versions_response = None
+            
+            if versions_response and versions_response.status_code == 200:
+                try:
+                    versions_data = versions_response.json()
+                    log('info', f"Versions API raw response keys: {list(versions_data.keys()) if isinstance(versions_data, dict) else 'not a dict'}")
+                    log('info', f"Versions API raw response: {str(versions_data)[:500]}...")  # Log first 500 chars
+                except Exception as json_err:
+                    log('error', f"Failed to parse versions JSON: {json_err}")
+                    versions_data = {}
+                
                 # Handle both wrapped and unwrapped response formats
                 versions_list = versions_data.get('prompt_versions', []) if isinstance(versions_data, dict) else versions_data
                 if not isinstance(versions_list, list):
+                    log('warning', f"versions_list is not a list, it's: {type(versions_list)}")
                     versions_list = []
+                
+                log('info', f"Versions list contains {len(versions_list)} items")
                 
                 latest_version_num: int = 0
                 
                 for v in versions_list:
                     version_val = v.get('version')
                     version_num = int(str(version_val)) if version_val is not None else 0
+                    log('debug', f"Processing version {version_num}")
                     
                     # Find aliases for this version
                     version_aliases: list[str] = []
@@ -1757,9 +1787,18 @@ def get_prompt_details():
                 if result['versions'] and not result.get('template'):
                     result['template'] = result['versions'][0].get('template', '')
                 
-                log('info', f"REST API returned {len(versions_list)} versions")
+                log('info', f"REST API returned {len(versions_list)} versions, processed {len(result['versions'])} versions")
+                log('info', f"Final versions in result: {[v['version'] for v in result['versions']]}")
+            elif versions_response:
+                log('error', f"=== VERSIONS API FAILED ===")
+                log('error', f"Could not get versions: status={versions_response.status_code}")
+                try:
+                    error_text = versions_response.text[:1000] if versions_response.text else 'empty'
+                    log('error', f"Response text: {error_text}")
+                except Exception:
+                    log('error', "Could not read response text")
             else:
-                log('warning', f"Could not get versions: {versions_response.status_code} - {versions_response.text}")
+                log('error', f"=== VERSIONS API FAILED - No response ===")
             
             log('info', f"Retrieved details for prompt {full_name}: {len(result['versions'])} versions, {len(result['aliases'])} aliases, {len(result['tags'])} tags")
             return jsonify(result)
