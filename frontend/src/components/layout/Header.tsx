@@ -12,6 +12,7 @@ import ConnectionStatus from '../ui/ConnectionStatus';
 import GraphVisualization from '../visualization/GraphVisualization';
 import DeploymentPanel from '../deployment/DeploymentPanel';
 import ChatPanel from '../chat/ChatPanel';
+import GitHubImportModal from '../ui/GitHubImportModal';
 
 interface HeaderProps {
   showPreview: boolean;
@@ -26,6 +27,7 @@ export default function Header({ showPreview, onTogglePreview }: HeaderProps) {
   const [showVisualization, setShowVisualization] = useState(false);
   const [showDeployment, setShowDeployment] = useState(false);
   const [showChat, setShowChat] = useState(false);
+  const [showImportModal, setShowImportModal] = useState(false);
 
   const hasAgents = Object.keys(config.agents || {}).length > 0;
   const hasOrchestration = !!(config.app?.orchestration?.supervisor || config.app?.orchestration?.swarm);
@@ -45,46 +47,50 @@ export default function Header({ showPreview, onTogglePreview }: HeaderProps) {
     downloadYAML(config, `${appName}.yaml`);
   };
 
-  const handleImport = (event: React.ChangeEvent<HTMLInputElement>) => {
+  // Core import logic - shared between file upload and GitHub import
+  const importYamlContent = (content: string, source: string) => {
+    try {
+      // Extract anchor/alias relationships BEFORE parsing
+      // This preserves the reference structure for later export
+      const references = extractYamlReferences(content);
+      setYamlReferences(references);
+      console.log(`[Import from ${source}] Extracted YAML references:`, references);
+      
+      // Now parse the YAML (which will resolve aliases)
+      const parsed = yaml.load(content) as AppConfig;
+      
+      // Populate refName for memory based on captured anchor
+      if (parsed.memory && references.anchorPaths) {
+        // Find the anchor that was defined at the 'memory' path
+        const memoryAnchor = references.anchors.find(a => a.path === 'memory');
+        if (memoryAnchor) {
+          parsed.memory.refName = memoryAnchor.name;
+          console.log('[Import] Set memory refName to:', memoryAnchor.name);
+        }
+      }
+      
+      // Clear section-level anchor overrides from previous config
+      clearSectionAnchors();
+      
+      setConfig(parsed);
+      
+      // Start a new chat session since the imported config is different
+      startNewSession();
+      console.log(`[Import from ${source}] Started new chat session for imported config`);
+    } catch (error) {
+      console.error('Failed to parse YAML:', error);
+      alert('Failed to parse YAML file. Please check the format.');
+    }
+  };
+
+  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
     const reader = new FileReader();
     reader.onload = (e) => {
-      try {
-        const content = e.target?.result as string;
-        
-        // Extract anchor/alias relationships BEFORE parsing
-        // This preserves the reference structure for later export
-        const references = extractYamlReferences(content);
-        setYamlReferences(references);
-        console.log('[Import] Extracted YAML references:', references);
-        
-        // Now parse the YAML (which will resolve aliases)
-        const parsed = yaml.load(content) as AppConfig;
-        
-        // Populate refName for memory based on captured anchor
-        if (parsed.memory && references.anchorPaths) {
-          // Find the anchor that was defined at the 'memory' path
-          const memoryAnchor = references.anchors.find(a => a.path === 'memory');
-          if (memoryAnchor) {
-            parsed.memory.refName = memoryAnchor.name;
-            console.log('[Import] Set memory refName to:', memoryAnchor.name);
-          }
-        }
-        
-        // Clear section-level anchor overrides from previous config
-        clearSectionAnchors();
-        
-        setConfig(parsed);
-        
-        // Start a new chat session since the imported config is different
-        startNewSession();
-        console.log('[Import] Started new chat session for imported config');
-      } catch (error) {
-        console.error('Failed to parse YAML:', error);
-        alert('Failed to parse YAML file. Please check the format.');
-      }
+      const content = e.target?.result as string;
+      importYamlContent(content, `file: ${file.name}`);
     };
     reader.readAsText(file);
     
@@ -92,6 +98,14 @@ export default function Header({ showPreview, onTogglePreview }: HeaderProps) {
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
+  };
+
+  const handleGitHubImport = (content: string, fileName: string) => {
+    importYamlContent(content, `GitHub: ${fileName}`);
+  };
+
+  const handleLocalUploadFromModal = () => {
+    fileInputRef.current?.click();
   };
 
   const handleReset = () => {
@@ -143,14 +157,14 @@ export default function Header({ showPreview, onTogglePreview }: HeaderProps) {
           ref={fileInputRef}
           type="file"
           accept=".yaml,.yml"
-          onChange={handleImport}
+          onChange={handleFileUpload}
           className="hidden"
         />
         
         <Button 
           variant="ghost" 
           size="sm"
-          onClick={() => fileInputRef.current?.click()}
+          onClick={() => setShowImportModal(true)}
         >
           <Upload className="w-4 h-4" />
           Import
@@ -257,6 +271,14 @@ export default function Header({ showPreview, onTogglePreview }: HeaderProps) {
       >
         <ChatPanel onClose={() => setShowChat(false)} />
       </Modal>
+
+      {/* GitHub Import Modal */}
+      <GitHubImportModal
+        isOpen={showImportModal}
+        onClose={() => setShowImportModal(false)}
+        onImportFile={handleGitHubImport}
+        onLocalUpload={handleLocalUploadFromModal}
+      />
     </header>
   );
 }

@@ -3818,6 +3818,16 @@ def get_version():
     })
 
 
+@app.route('/api/github-config')
+def get_github_config():
+    """Get GitHub repository configuration for config templates."""
+    return jsonify({
+        'repo': os.environ.get('GITHUB_CONFIG_REPO', 'natefleming/dao-ai'),
+        'branch': os.environ.get('GITHUB_CONFIG_BRANCH', 'main'),
+        'path': os.environ.get('GITHUB_CONFIG_PATH', 'config'),
+    })
+
+
 # =============================================================================
 # AI Prompt Assistant
 # =============================================================================

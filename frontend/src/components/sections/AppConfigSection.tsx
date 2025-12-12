@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Settings, Save, GitBranch, Users, ArrowRightLeft, Plus, Trash2, Info, Bot, X, Tag, Wrench, Sparkles, Loader2, Variable } from 'lucide-react';
 import { useConfigStore } from '@/stores/configStore';
+import { useCatalogs, useSchemas } from '@/hooks/useDatabricks';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
 import Select from '../ui/Select';
@@ -9,6 +10,8 @@ import Card from '../ui/Card';
 import Badge from '../ui/Badge';
 import { LogLevel } from '@/types/dao-ai-types';
 import { clsx } from 'clsx';
+
+type SchemaSource = 'configured' | 'select';
 
 // AI Supervisor Prompt generation API
 async function generateSupervisorPromptWithAI(params: {
@@ -87,12 +90,21 @@ export default function AppConfigSection() {
   const [formData, setFormData] = useState(() => {
     // Find the schema key that matches the registered_model's schema
     let modelSchemaKey = '';
+    let directCatalog = '';
+    let directSchema = '';
+    
     if (app?.registered_model?.schema) {
       const regSchema = app.registered_model.schema;
       const matchedSchemaEntry = Object.entries(schemas).find(([, s]) => 
         s.catalog_name === regSchema.catalog_name && s.schema_name === regSchema.schema_name
       );
-      modelSchemaKey = matchedSchemaEntry ? matchedSchemaEntry[0] : '';
+      if (matchedSchemaEntry) {
+        modelSchemaKey = matchedSchemaEntry[0];
+      } else {
+        // Schema exists but doesn't match any configured schema
+        directCatalog = regSchema.catalog_name || '';
+        directSchema = regSchema.schema_name || '';
+      }
     }
     
     // Get service principal ref if it exists
@@ -105,16 +117,42 @@ export default function AppConfigSection() {
     
     return {
       name: app?.name || '',
-    description: app?.description || '',
-    logLevel: app?.log_level || 'INFO',
-    endpointName: app?.endpoint_name || '',
+      description: app?.description || '',
+      logLevel: app?.log_level || 'INFO',
+      endpointName: app?.endpoint_name || '',
       modelName: app?.registered_model?.name || '',
       modelSchema: modelSchemaKey,
-    workloadSize: app?.workload_size || 'Small',
-    scaleToZero: app?.scale_to_zero ?? true,
+      directCatalog,
+      directSchema,
+      workloadSize: app?.workload_size || 'Small',
+      scaleToZero: app?.scale_to_zero ?? true,
       servicePrincipalRef: spRef,
     };
   });
+  
+  // Schema source - default to 'configured' if there are configured schemas, otherwise 'select'
+  const [schemaSource, setSchemaSource] = useState<SchemaSource>(() => {
+    const hasConfiguredSchemas = Object.keys(schemas).length > 0;
+    // If we have a matching configured schema, use 'configured'
+    if (app?.registered_model?.schema) {
+      const regSchema = app.registered_model.schema;
+      const matchedSchemaEntry = Object.entries(schemas).find(([, s]) => 
+        s.catalog_name === regSchema.catalog_name && s.schema_name === regSchema.schema_name
+      );
+      if (matchedSchemaEntry) {
+        return 'configured';
+      }
+      // Schema exists but doesn't match - use 'select'
+      return 'select';
+    }
+    return hasConfiguredSchemas ? 'configured' : 'select';
+  });
+  
+  // Catalogs and schemas for direct selection
+  const { data: catalogsData } = useCatalogs();
+  const { data: schemasListData } = useSchemas(formData.directCatalog || null);
+  const catalogs = catalogsData || [];
+  const schemasList = schemasListData || [];
   
   // Track if endpoint/model names were auto-derived (to know when to update them)
   const [derivedEndpointName, setDerivedEndpointName] = useState('');
@@ -337,14 +375,6 @@ export default function AppConfigSection() {
     return false;
   })();
 
-  const schemaOptions = [
-    { value: '', label: 'None' },
-    ...Object.keys(schemas).map((key) => ({
-      value: key,
-      label: key,
-    })),
-  ];
-
   const llmOptions = [
     { value: '', label: 'Select an LLM...' },
     ...Object.entries(llms).map(([key, llm]) => ({
@@ -381,12 +411,24 @@ export default function AppConfigSection() {
   useEffect(() => {
     // Find the schema key that matches the registered_model's schema
     let modelSchemaKey = '';
+    let directCatalog = '';
+    let directSchema = '';
+    let detectedSchemaSource: SchemaSource = Object.keys(schemas).length > 0 ? 'configured' : 'select';
+    
     if (app?.registered_model?.schema) {
       const regSchema = app.registered_model.schema;
       const matchedSchemaEntry = Object.entries(schemas).find(([, s]) => 
         s.catalog_name === regSchema.catalog_name && s.schema_name === regSchema.schema_name
       );
-      modelSchemaKey = matchedSchemaEntry ? matchedSchemaEntry[0] : '';
+      if (matchedSchemaEntry) {
+        modelSchemaKey = matchedSchemaEntry[0];
+        detectedSchemaSource = 'configured';
+      } else {
+        // Schema exists but doesn't match any configured schema
+        directCatalog = regSchema.catalog_name || '';
+        directSchema = regSchema.schema_name || '';
+        detectedSchemaSource = 'select';
+      }
     }
     
     // Get service principal ref if it exists
@@ -404,10 +446,14 @@ export default function AppConfigSection() {
       endpointName: app?.endpoint_name || '',
       modelName: app?.registered_model?.name || '',
       modelSchema: modelSchemaKey,
+      directCatalog,
+      directSchema,
       workloadSize: app?.workload_size || 'Small',
       scaleToZero: app?.scale_to_zero ?? true,
       servicePrincipalRef: spRef,
     });
+    
+    setSchemaSource(detectedSchemaSource);
     
     // Sync selected agents - default to all if none are explicitly configured
     if (app?.agents && Array.isArray(app.agents) && app.agents.length > 0) {
@@ -584,7 +630,16 @@ export default function AppConfigSection() {
   };
 
   const handleSave = () => {
-    const selectedSchema = formData.modelSchema ? schemas[formData.modelSchema] : undefined;
+    // Determine the schema based on source
+    let selectedSchema;
+    if (schemaSource === 'configured' && formData.modelSchema) {
+      selectedSchema = schemas[formData.modelSchema];
+    } else if (schemaSource === 'select' && formData.directCatalog && formData.directSchema) {
+      selectedSchema = {
+        catalog_name: formData.directCatalog,
+        schema_name: formData.directSchema,
+      };
+    }
 
     // Build orchestration config
     let orchestration: any = undefined;
@@ -1321,13 +1376,70 @@ export default function AppConfigSection() {
             onChange={(e) => setFormData({ ...formData, modelName: e.target.value })}
             required
           />
-          <Select
-            label="Model Schema"
-            options={schemaOptions}
-            value={formData.modelSchema}
-            onChange={(e) => setFormData({ ...formData, modelSchema: e.target.value })}
-            hint="Unity Catalog schema for model registration"
-          />
+          
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between">
+              <label className="block text-sm font-medium text-slate-300">Model Schema</label>
+              
+              {/* Schema Source Toggle - aligned with label */}
+              <div className="inline-flex rounded-lg bg-slate-900/50 p-0.5">
+                <button
+                  type="button"
+                  onClick={() => setSchemaSource('configured')}
+                  disabled={Object.keys(schemas).length === 0}
+                  className={`px-2 py-0.5 text-[10px] rounded-md font-medium transition-all duration-150 ${
+                    schemaSource === 'configured'
+                      ? 'bg-violet-500/20 text-violet-400 border border-violet-500/40'
+                      : 'text-slate-400 border border-transparent hover:text-slate-300 disabled:opacity-50 disabled:cursor-not-allowed'
+                  }`}
+                >
+                  Configured
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSchemaSource('select')}
+                  className={`px-2 py-0.5 text-[10px] rounded-md font-medium transition-all duration-150 ${
+                    schemaSource === 'select'
+                      ? 'bg-violet-500/20 text-violet-400 border border-violet-500/40'
+                      : 'text-slate-400 border border-transparent hover:text-slate-300'
+                  }`}
+                >
+                  Select
+                </button>
+              </div>
+            </div>
+            
+            {schemaSource === 'configured' ? (
+              <Select
+                options={[
+                  { value: '', label: 'Select a configured schema...' },
+                  ...Object.keys(schemas).map((key) => ({ value: key, label: key })),
+                ]}
+                value={formData.modelSchema}
+                onChange={(e) => setFormData({ ...formData, modelSchema: e.target.value })}
+              />
+            ) : (
+              <div className="grid grid-cols-2 gap-2">
+                <Select
+                  options={[
+                    { value: '', label: 'Select Catalog...' },
+                    ...catalogs.map((cat) => ({ value: cat.name, label: cat.name })),
+                  ]}
+                  value={formData.directCatalog}
+                  onChange={(e) => setFormData({ ...formData, directCatalog: e.target.value, directSchema: '' })}
+                />
+                <Select
+                  options={[
+                    { value: '', label: 'Select Schema...' },
+                    ...schemasList.map((s) => ({ value: s.name, label: s.name })),
+                  ]}
+                  value={formData.directSchema}
+                  onChange={(e) => setFormData({ ...formData, directSchema: e.target.value })}
+                  disabled={!formData.directCatalog}
+                />
+              </div>
+            )}
+          </div>
         </div>
       </Card>
 

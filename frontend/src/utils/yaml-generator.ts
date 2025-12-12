@@ -921,6 +921,18 @@ function formatCredentialWithPath(value: unknown, path?: string): any {
 
 /**
  * Format a credential that might be a raw value, env variable, secret reference, or variable reference.
+ * 
+ * According to dao-ai config, AnyVariable can be:
+ * - str (plain string) - just output as the string value
+ * - EnvironmentVariableModel - { env: "ENV_VAR_NAME" }
+ * - SecretVariableModel - { scope: "...", secret: "..." }
+ * - PrimitiveVariableModel - { value: "..." }
+ * 
+ * Input conventions:
+ * - *variable_name -> YAML alias reference
+ * - env:ENV_VAR_NAME -> EnvironmentVariableModel
+ * - secret:scope/key -> SecretVariableModel
+ * - plain string -> output as plain string (NOT wrapped in { env: })
  */
 function formatCredential(value: unknown): any {
   // Handle non-string values (could be objects from resolved YAML anchors)
@@ -932,19 +944,21 @@ function formatCredential(value: unknown): any {
   if (value.startsWith('*')) {
     return createReference(value.slice(1));
   }
+  
+  // Handle environment variable reference format (env:VAR_NAME)
   if (value.startsWith('env:')) {
     return { env: value.slice(4) };
   }
+  
+  // Handle secret reference format (secret:scope/key)
   if (value.startsWith('secret:')) {
     const parts = value.slice(7).split('/');
     if (parts.length === 2) {
       return { scope: parts[0], secret: parts[1] };
     }
   }
-  // Plain value - return as env variable reference
-  if (value) {
-    return { env: value };
-  }
+  
+  // Plain value - return as-is (plain strings are valid for AnyVariable)
   return value;
 }
 

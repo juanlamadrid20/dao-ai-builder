@@ -731,7 +731,12 @@ export default function PromptsSection() {
       ) : (
         <div className="grid gap-4">
           {Object.entries(prompts).map(([key, prompt]) => (
-            <Card key={key} variant="interactive" className="group">
+            <Card 
+              key={key} 
+              variant="interactive" 
+              className="group cursor-pointer"
+              onClick={() => handleEdit(key)}
+            >
               <div className="flex items-start justify-between">
                 <div className="flex items-start space-x-4">
                   <div className="w-10 h-10 rounded-lg bg-violet-500/20 flex items-center justify-center flex-shrink-0">
@@ -773,11 +778,12 @@ export default function PromptsSection() {
                     )}
                   </div>
                 </div>
-                <div className="flex items-center space-x-2">
+                <div className="flex items-center space-x-2" onClick={(e) => e.stopPropagation()}>
                   <Button
                     variant="ghost"
                     size="sm"
                     onClick={() => handleEdit(key)}
+                    title="Edit prompt"
                   >
                     <Edit2 className="w-4 h-4" />
                   </Button>
@@ -787,6 +793,7 @@ export default function PromptsSection() {
                     onClick={() => {
                       safeDelete('Prompt', key, () => removePrompt(key));
                     }}
+                    title="Delete prompt"
                   >
                     <Trash2 className="w-4 h-4" />
                   </Button>

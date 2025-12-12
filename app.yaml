@@ -17,6 +17,13 @@ env:
     value: "8000"
   - name: DAO_AI_VERSION
     value: "0.0.35"
+  # GitHub repository for config templates
+  - name: GITHUB_CONFIG_REPO
+    value: "natefleming/dao-ai"
+  - name: GITHUB_CONFIG_BRANCH
+    value: "main"
+  - name: GITHUB_CONFIG_PATH
+    value: "config"
 
 # Note: user_api_scopes are configured in databricks.yml, not here
 # This file is for runtime configuration only
