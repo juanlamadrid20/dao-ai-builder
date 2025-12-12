@@ -13,11 +13,32 @@ import {
   Info,
   AlertCircle,
   Plus,
-  Hash
+  Hash,
+  Key
 } from 'lucide-react';
 import { useConfigStore } from '@/stores/configStore';
 import { useChatStore, LogEntry } from '@/stores/chatStore';
+import { useCredentialStore } from '@/stores/credentialStore';
+import { generateYAML } from '@/utils/yaml-generator';
+import yaml from 'js-yaml';
 import Button from '../ui/Button';
+
+/**
+ * Remove internal-only fields (like refName) from a config object.
+ * This ensures we don't send UI-specific fields to the backend.
+ */
+function sanitizeConfig(obj: any): any {
+  if (!obj || typeof obj !== 'object') return obj;
+  if (Array.isArray(obj)) return obj.map(sanitizeConfig);
+  
+  const result: Record<string, any> = {};
+  for (const [key, value] of Object.entries(obj)) {
+    // Skip internal-only fields
+    if (key === 'refName') continue;
+    result[key] = sanitizeConfig(value);
+  }
+  return result;
+}
 
 interface ChatPanelProps {
   onClose?: () => void;
@@ -37,11 +58,24 @@ export default function ChatPanel({ onClose }: ChatPanelProps) {
     removeEmptyMessages
   } = useChatStore();
   
+  const {
+    credentialType,
+    manualClientId,
+    manualClientSecret,
+    manualPat,
+    setCredentialType,
+    setManualClientId,
+    setManualClientSecret,
+    setManualPat,
+    hasCredentials
+  } = useCredentialStore();
+  
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [errorTrace, setErrorTrace] = useState<string | null>(null);
   const [logsExpanded, setLogsExpanded] = useState(false);
+  const [credentialsExpanded, setCredentialsExpanded] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const logsEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -98,12 +132,22 @@ export default function ChatPanel({ onClose }: ChatPanelProps) {
       addLog('debug', `Preparing request with ${apiMessages.length} messages`);
       addLog('info', 'Creating agent from configuration...');
 
+      // Generate YAML and parse it back to get a clean config without internal fields
+      const yamlContent = generateYAML(config);
+      const cleanConfig = yaml.load(yamlContent) as Record<string, any>;
+      const sanitizedConfig = sanitizeConfig(cleanConfig);
+      
+      // Get credentials from store
+      const credentials = useCredentialStore.getState().getCredentials();
+      addLog('debug', `Using ${credentials.type} authentication`);
+
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          config,
+          config: sanitizedConfig,
           messages: apiMessages,
+          credentials,
           context: {
             thread_id: conversationId,
             user_id: 'builder-user'
@@ -264,6 +308,89 @@ export default function ChatPanel({ onClose }: ChatPanelProps) {
             New Session
           </Button>
         </div>
+      </div>
+
+      {/* Credentials Configuration */}
+      <div className="border-b border-slate-700">
+        <button
+          onClick={() => setCredentialsExpanded(!credentialsExpanded)}
+          className="w-full flex items-center justify-between p-2 text-xs hover:bg-slate-800/50 transition-colors"
+        >
+          <div className="flex items-center gap-2">
+            <Key className="w-3.5 h-3.5 text-slate-400" />
+            <span className="text-slate-400">Authentication:</span>
+            <span className="text-slate-300">
+              {credentialType === 'obo' && 'On-Behalf-Of Token'}
+              {credentialType === 'manual_sp' && 'Service Principal'}
+              {credentialType === 'manual_pat' && 'Personal Access Token'}
+            </span>
+            {!hasCredentials() && credentialType !== 'obo' && (
+              <span className="text-amber-400 text-xs">(not configured)</span>
+            )}
+          </div>
+          {credentialsExpanded ? (
+            <ChevronUp className="w-4 h-4 text-slate-400" />
+          ) : (
+            <ChevronDown className="w-4 h-4 text-slate-400" />
+          )}
+        </button>
+        
+        {credentialsExpanded && (
+          <div className="p-3 bg-slate-800/30 space-y-3">
+            <div className="flex gap-2">
+              {(['obo', 'manual_sp', 'manual_pat'] as const).map((type) => (
+                <button
+                  key={type}
+                  onClick={() => setCredentialType(type)}
+                  className={`px-3 py-1.5 text-xs rounded-md transition-colors ${
+                    credentialType === type
+                      ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/50'
+                      : 'bg-slate-700/50 text-slate-400 border border-slate-600 hover:bg-slate-700'
+                  }`}
+                >
+                  {type === 'obo' && 'OBO Token'}
+                  {type === 'manual_sp' && 'Service Principal'}
+                  {type === 'manual_pat' && 'PAT'}
+                </button>
+              ))}
+            </div>
+            
+            {credentialType === 'obo' && (
+              <p className="text-xs text-slate-500">
+                Uses the On-Behalf-Of token from Databricks Apps. This may have limited scopes.
+              </p>
+            )}
+            
+            {credentialType === 'manual_sp' && (
+              <div className="space-y-2">
+                <input
+                  type="text"
+                  placeholder="Client ID"
+                  value={manualClientId}
+                  onChange={(e) => setManualClientId(e.target.value)}
+                  className="w-full px-3 py-1.5 text-sm bg-slate-900 border border-slate-600 rounded-md text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                />
+                <input
+                  type="password"
+                  placeholder="Client Secret"
+                  value={manualClientSecret}
+                  onChange={(e) => setManualClientSecret(e.target.value)}
+                  className="w-full px-3 py-1.5 text-sm bg-slate-900 border border-slate-600 rounded-md text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                />
+              </div>
+            )}
+            
+            {credentialType === 'manual_pat' && (
+              <input
+                type="password"
+                placeholder="Personal Access Token"
+                value={manualPat}
+                onChange={(e) => setManualPat(e.target.value)}
+                className="w-full px-3 py-1.5 text-sm bg-slate-900 border border-slate-600 rounded-md text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-cyan-500"
+              />
+            )}
+          </div>
+        )}
       </div>
 
       {/* Not Ready Warning */}

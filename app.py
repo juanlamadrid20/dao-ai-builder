@@ -3346,15 +3346,22 @@ def deploy_quick():
                     log('info', f"Set MLflow tracking URI to 'databricks' with host: {auth_host}")
                     
                     # Set any environment_vars from the config
-                    # These are resolved by the config's update_environment_vars validator
+                    # SKIP variables that use {{secrets/...}} syntax - these are only resolved
+                    # by Databricks Model Serving at runtime, not during local agent creation.
+                    # Setting them would override the fallback mechanism in database configs.
                     if app_config.app and app_config.app.environment_vars:
-                        log('info', f"Setting {len(app_config.app.environment_vars)} environment variables from config")
+                        log('info', f"Processing {len(app_config.app.environment_vars)} environment variables from config")
                         for key, value in app_config.app.environment_vars.items():
                             if value is not None:
+                                str_value = str(value)
+                                # Skip Model Serving secret references - they only work at runtime
+                                if '{{secrets/' in str_value:
+                                    log('info', f"Skipping {key} - contains Model Serving secret reference (will be resolved at runtime)")
+                                    continue
                                 # Save original value for restoration
                                 if key not in orig_env:
                                     orig_env[key] = os_module.environ.get(key)
-                                os_module.environ[key] = str(value)
+                                os_module.environ[key] = str_value
                                 log('info', f"Set environment variable: {key}")
                     
                     status['steps'][0]['status'] = 'completed'
@@ -3528,6 +3535,29 @@ def chat_with_agent():
     config_dict = data.get('config')
     messages = data.get('messages', [])
     context = data.get('context', {})
+    credentials = data.get('credentials', {})
+    
+    # Capture auth info BEFORE entering the generator (while still in request context)
+    # Priority: manual credentials > OBO token > SDK config
+    auth_token = None
+    auth_token_source = None
+    auth_client_id = None
+    auth_client_secret = None
+    
+    cred_type = credentials.get('type', 'obo')
+    
+    if cred_type == 'manual_pat' and credentials.get('pat'):
+        auth_token = credentials['pat']
+        auth_token_source = 'manual_pat'
+    elif cred_type == 'manual_sp' and credentials.get('client_id') and credentials.get('client_secret'):
+        auth_client_id = credentials['client_id']
+        auth_client_secret = credentials['client_secret']
+        auth_token_source = 'manual_sp'
+    else:
+        # Fall back to OBO or other auth methods
+        auth_token, auth_token_source = get_databricks_token_with_source()
+    
+    auth_host, auth_host_source = get_databricks_host_with_source()
     
     def generate():
         """Generator for SSE stream"""
@@ -3562,6 +3592,27 @@ def chat_with_agent():
                 return
             
             yield from send_log('info', f"Chat request received with {len(messages)} messages")
+            
+            # Set up authentication - use captured auth info from request context
+            # IMPORTANT: Clear ALL auth env vars first to avoid conflicts
+            for var in ['DATABRICKS_TOKEN', 'DATABRICKS_CLIENT_ID', 'DATABRICKS_CLIENT_SECRET', 'MLFLOW_TRACKING_TOKEN']:
+                if var in os.environ:
+                    del os.environ[var]
+            
+            if auth_token_source == 'manual_sp':
+                yield from send_log('info', 'Using manual service principal authentication')
+                os.environ['DATABRICKS_CLIENT_ID'] = auth_client_id
+                os.environ['DATABRICKS_CLIENT_SECRET'] = auth_client_secret
+            elif auth_token:
+                yield from send_log('info', f"Using {auth_token_source} authentication")
+                os.environ['DATABRICKS_TOKEN'] = auth_token
+                os.environ['MLFLOW_TRACKING_TOKEN'] = auth_token
+            else:
+                yield from send_log('warning', 'No authentication token available - some features may not work')
+            
+            if auth_host:
+                yield from send_log('debug', f"Using Databricks host from {auth_host_source}: {auth_host[:30]}...")
+                os.environ['DATABRICKS_HOST'] = normalize_host(auth_host)
             
             # Import dao-ai components
             try:

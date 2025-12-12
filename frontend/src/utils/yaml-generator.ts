@@ -1,6 +1,6 @@
 import yaml from 'js-yaml';
 import { AppConfig, VariableModel, DatabaseModel, OrchestrationModel, ToolFunctionModel, HumanInTheLoopModel } from '@/types/dao-ai-types';
-import { getYamlReferences, getOriginalAnchorName, shouldUseMergeKey, getRequiredMergeAnchors } from './yaml-references';
+import { getYamlReferences, getOriginalAnchorName, shouldUseMergeKey, getRequiredMergeAnchors, setSectionAnchor, getSectionAnchor, clearSectionAnchors } from './yaml-references';
 
 /**
  * Safely check if a value is a string that starts with a prefix.
@@ -39,6 +39,12 @@ function addYamlAnchors(yamlString: string): string {
     'agents',
   ];
   
+  // Sections where the anchor should be on the section key itself (not children)
+  // These are single-object sections that can be referenced
+  const sectionLevelAnchorSections = [
+    'memory',
+  ];
+  
   // Sections nested under 'resources:' that need anchors
   const resourceAnchorSections = [
     'llms',
@@ -54,7 +60,6 @@ function addYamlAnchors(yamlString: string): string {
   
   // Sections that should NOT have anchors
   const noAnchorSections = [
-    'memory',
     'app',
   ];
   
@@ -132,6 +137,26 @@ function addYamlAnchors(yamlString: string): string {
     }
     if (section.endLine === -1) {
       section.endLine = lines.length;
+    }
+  }
+  
+  // First, add anchors to section-level anchor sections (like memory:)
+  // These get the anchor on the section key itself, not on children
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    // Match top-level section keys (no indentation)
+    const sectionMatch = line.match(/^(\w[\w_-]*):\s*$/);
+    if (sectionMatch) {
+      const sectionName = sectionMatch[1];
+      if (sectionLevelAnchorSections.includes(sectionName) && !line.includes('&')) {
+        // Check for custom anchor from config (e.g., memory.refName)
+        const sectionAnchor = getSectionAnchor(sectionName);
+        // Then check for original anchor name from imported YAML
+        const originalAnchor = getOriginalAnchorName(sectionName);
+        // Use: custom anchor > original anchor > section name
+        const anchorName = sectionAnchor || originalAnchor || sectionName;
+        lines[i] = `${sectionName}: &${anchorName}`;
+      }
     }
   }
   
@@ -634,8 +659,16 @@ function formatOrchestration(orchestration: OrchestrationModel, definedLLMs: Rec
     }
   }
   
+  // Handle memory - check if it was originally a reference
   if (orchestration.memory) {
-    result.memory = orchestration.memory;
+    const memoryRef = findOriginalReference('orchestration.memory', orchestration.memory);
+    if (memoryRef) {
+      result.memory = createReference(memoryRef);
+    } else {
+      // If there's a top-level memory config, reference it
+      // This handles the case where memory is defined at the config level
+      result.memory = createReference('memory');
+    }
   }
   
   return result;
@@ -978,6 +1011,14 @@ function formatVariable(variable: VariableModel): any {
 export function generateYAML(config: AppConfig): string {
   const yamlConfig: any = {};
   
+  // Clear and set section-level anchor overrides from config
+  clearSectionAnchors();
+  
+  // Set memory section anchor from config.memory.refName if present
+  if (config.memory?.refName) {
+    setSectionAnchor('memory', config.memory.refName);
+  }
+  
   // Define shared references for use throughout generation
   const definedSchemas = config.schemas || {};
 
@@ -1293,9 +1334,10 @@ export function generateYAML(config: AppConfig): string {
     });
   }
 
-  // Memory
+  // Memory - Note: refName is only for UI anchor tracking, not included in output
   if (config.memory) {
     yamlConfig.memory = {};
+    // Explicitly do NOT include refName - it's only for internal anchor tracking
     
     if (config.memory.checkpointer) {
       // Check if database was originally a reference

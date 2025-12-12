@@ -281,6 +281,7 @@ export interface SwarmModel {
 }
 
 export interface MemoryModel {
+  refName?: string;  // Reference name for YAML anchor (e.g., &memory)
   checkpointer?: CheckpointerModel;
   store?: StoreModel;
 }

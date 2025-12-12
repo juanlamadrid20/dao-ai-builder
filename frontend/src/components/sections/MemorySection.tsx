@@ -10,6 +10,7 @@ import {
   CheckpointerModel,
   StoreModel,
 } from '@/types/dao-ai-types';
+import { normalizeRefNameWhileTyping, normalizeRefName } from '@/utils/name-utils';
 
 type StorageType = 'postgres' | 'memory';
 
@@ -41,6 +42,10 @@ export function MemorySection() {
     
     return '';
   };
+  
+  // Reference name for YAML anchor (e.g., &memory)
+  // Empty by default if no memory config exists
+  const [refName, setRefName] = useState(memory?.refName || '');
   
   const [checkpointerEnabled, setCheckpointerEnabled] = useState(!!memory?.checkpointer);
   const [storeEnabled, setStoreEnabled] = useState(!!memory?.store);
@@ -74,6 +79,8 @@ export function MemorySection() {
   
   // Update state when config changes
   useEffect(() => {
+    // Set reference name from config (empty if no memory config)
+    setRefName(memory?.refName || '');
     if (memory?.checkpointer) {
       setCheckpointerEnabled(true);
       setCheckpointerType(memory.checkpointer.type || 'memory');
@@ -92,7 +99,11 @@ export function MemorySection() {
   }, [memory, databases]);
   
   const buildMemoryModel = (): MemoryModel | undefined => {
-    const newMemory: MemoryModel = {};
+    // Only include refName if user has provided one, otherwise default to 'memory' when saving
+    const normalizedRefName = normalizeRefName(refName);
+    const newMemory: MemoryModel = {
+      refName: normalizedRefName || 'memory',
+    };
     
     if (checkpointerEnabled) {
       const checkpointer: CheckpointerModel = {
@@ -163,6 +174,23 @@ export function MemorySection() {
           Save Memory Config
         </Button>
       </div>
+
+      {/* Reference Name Section */}
+      <Card className="p-5">
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <Input
+              label="Reference Name"
+              value={refName}
+              onChange={(e) => setRefName(normalizeRefNameWhileTyping(e.target.value))}
+              placeholder="memory"
+            />
+            <p className="mt-1 text-xs text-slate-500">
+              Used as the YAML anchor (e.g., &{refName || 'memory'}) for referencing this memory configuration
+            </p>
+          </div>
+        </div>
+      </Card>
 
       {/* Info Card */}
       <Card className="p-4 bg-blue-900/20 border-blue-500/30">

@@ -6,7 +6,7 @@ import { useChatStore } from '@/stores/chatStore';
 import { downloadYAML } from '@/utils/yaml-generator';
 import { useRef, useState, useEffect } from 'react';
 import yaml from 'js-yaml';
-import { extractYamlReferences, setYamlReferences, clearYamlReferences } from '@/utils/yaml-references';
+import { extractYamlReferences, setYamlReferences, clearYamlReferences, clearSectionAnchors } from '@/utils/yaml-references';
 import { AppConfig } from '@/types/dao-ai-types';
 import ConnectionStatus from '../ui/ConnectionStatus';
 import GraphVisualization from '../visualization/GraphVisualization';
@@ -62,6 +62,20 @@ export default function Header({ showPreview, onTogglePreview }: HeaderProps) {
         
         // Now parse the YAML (which will resolve aliases)
         const parsed = yaml.load(content) as AppConfig;
+        
+        // Populate refName for memory based on captured anchor
+        if (parsed.memory && references.anchorPaths) {
+          // Find the anchor that was defined at the 'memory' path
+          const memoryAnchor = references.anchors.find(a => a.path === 'memory');
+          if (memoryAnchor) {
+            parsed.memory.refName = memoryAnchor.name;
+            console.log('[Import] Set memory refName to:', memoryAnchor.name);
+          }
+        }
+        
+        // Clear section-level anchor overrides from previous config
+        clearSectionAnchors();
+        
         setConfig(parsed);
         
         // Start a new chat session since the imported config is different
@@ -83,6 +97,7 @@ export default function Header({ showPreview, onTogglePreview }: HeaderProps) {
   const handleReset = () => {
     if (confirm('Are you sure you want to reset all configuration? This cannot be undone.')) {
       clearYamlReferences();
+      clearSectionAnchors();
       reset();
       startNewSession(); // Clear chat history when resetting config
     }
@@ -109,6 +124,14 @@ export default function Header({ showPreview, onTogglePreview }: HeaderProps) {
             <p className="text-xs text-slate-500">Agent Configuration Studio</p>
           </div>
         </div>
+        
+        {/* Current App Name Indicator */}
+        {config.app?.name && (
+          <div className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-cyan-500/10 to-blue-500/10 border border-cyan-500/30 rounded-lg">
+            <div className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
+            <span className="text-sm font-medium text-cyan-300">{config.app.name}</span>
+          </div>
+        )}
       </div>
 
       <div className="flex items-center space-x-3">

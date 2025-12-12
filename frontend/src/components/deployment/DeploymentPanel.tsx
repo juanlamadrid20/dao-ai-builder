@@ -20,10 +20,30 @@ import {
   Building2
 } from 'lucide-react';
 import { useConfigStore } from '@/stores/configStore';
+import { useDeploymentStore, DeploymentStatus } from '@/stores/deploymentStore';
+import { generateYAML } from '@/utils/yaml-generator';
+import yaml from 'js-yaml';
 import Button from '../ui/Button';
 import Badge from '../ui/Badge';
 
 type CredentialType = 'app' | 'obo' | 'manual_sp' | 'manual_pat';
+
+/**
+ * Remove internal-only fields (like refName) from a config object.
+ * This ensures we don't send UI-specific fields to the backend for validation.
+ */
+function sanitizeConfig(obj: any): any {
+  if (!obj || typeof obj !== 'object') return obj;
+  if (Array.isArray(obj)) return obj.map(sanitizeConfig);
+  
+  const result: Record<string, any> = {};
+  for (const [key, value] of Object.entries(obj)) {
+    // Skip internal-only fields
+    if (key === 'refName') continue;
+    result[key] = sanitizeConfig(value);
+  }
+  return result;
+}
 
 interface CredentialConfig {
   type: CredentialType;
@@ -63,29 +83,6 @@ interface ValidationResult {
   };
 }
 
-interface DeploymentStep {
-  name: string;
-  status: 'pending' | 'running' | 'completed' | 'failed';
-  error?: string;
-}
-
-interface DeploymentStatus {
-  id: string;
-  status: 'starting' | 'creating_agent' | 'deploying' | 'completed' | 'failed';
-  type: 'quick' | 'full';
-  started_at: string;
-  completed_at?: string;
-  steps: DeploymentStep[];
-  current_step: number;
-  error?: string;
-  error_trace?: string;
-  result?: {
-    endpoint_name: string;
-    model_name: string;
-    message: string;
-  };
-}
-
 const stepIcons: Record<string, React.ReactNode> = {
   validate: <Settings className="w-4 h-4" />,
   create_agent: <Bot className="w-4 h-4" />,
@@ -100,12 +97,22 @@ const stepLabels: Record<string, string> = {
 
 export default function DeploymentPanel({ onClose }: DeploymentPanelProps) {
   const { config } = useConfigStore();
+  const {
+    deploymentId,
+    deploymentStatus,
+    isDeploying,
+    selectedOption,
+    startDeployment,
+    setDeploymentId,
+    setDeploymentStatus,
+    failDeployment,
+    reset: resetDeployment,
+    canStartNewDeployment,
+  } = useDeploymentStore();
+  
   const [validation, setValidation] = useState<ValidationResult | null>(null);
   const [isValidating, setIsValidating] = useState(false);
-  const [deploymentId, setDeploymentId] = useState<string | null>(null);
-  const [deploymentStatus, setDeploymentStatus] = useState<DeploymentStatus | null>(null);
-  const [isDeploying, setIsDeploying] = useState(false);
-  const [selectedOption, setSelectedOption] = useState<'quick' | 'full'>('quick');
+  const [localSelectedOption, setLocalSelectedOption] = useState<'quick' | 'full'>(selectedOption);
   const [error, setError] = useState<string | null>(null);
   
   // Credential selection state
@@ -145,10 +152,17 @@ export default function DeploymentPanel({ onClose }: DeploymentPanelProps) {
     setError(null);
     
     try {
+      // Generate YAML first to strip out internal-only fields like refName
+      const yamlContent = generateYAML(config);
+      // Parse the YAML to get a clean config object for validation
+      const cleanConfig = yaml.load(yamlContent) as Record<string, any>;
+      
+      const sanitizedConfig = sanitizeConfig(cleanConfig);
+      
       const response = await fetch('/api/deploy/validate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ config }),
+        body: JSON.stringify({ config: sanitizedConfig }),
       });
       
       // Check content type to handle HTML error pages
@@ -193,13 +207,8 @@ export default function DeploymentPanel({ onClose }: DeploymentPanelProps) {
         const response = await fetch(`/api/deploy/status/${deploymentId}`);
         if (!response.ok) return;
         
-        const status = await response.json();
+        const status: DeploymentStatus = await response.json();
         setDeploymentStatus(status);
-        
-        // Stop polling if deployment is complete or failed
-        if (status.status === 'completed' || status.status === 'failed') {
-          setIsDeploying(false);
-        }
       } catch (err) {
         console.error('Failed to poll deployment status:', err);
       }
@@ -208,14 +217,20 @@ export default function DeploymentPanel({ onClose }: DeploymentPanelProps) {
     // Poll immediately
     pollStatus();
     
-    // Then poll every 2 seconds
+    // Then poll every 2 seconds while deployment is active
     const interval = setInterval(pollStatus, 2000);
     
     return () => clearInterval(interval);
-  }, [deploymentId]);
+  }, [deploymentId, setDeploymentStatus]);
 
   const handleDeploy = async () => {
     if (!validation?.valid) return;
+    
+    // Check if we can start a new deployment
+    if (!canStartNewDeployment()) {
+      setError('A deployment is already in progress. Please wait for it to complete.');
+      return;
+    }
     
     // Validate manual credentials if selected
     if (credentialType === 'manual_sp' && (!manualClientId || !manualClientSecret)) {
@@ -227,23 +242,10 @@ export default function DeploymentPanel({ onClose }: DeploymentPanelProps) {
       return;
     }
     
-    setIsDeploying(true);
     setError(null);
     
-    // Show deployment progress screen immediately with "starting" status
-    // This provides immediate feedback to the user
-    setDeploymentStatus({
-      id: 'pending',
-      status: 'starting',
-      type: selectedOption,
-      started_at: new Date().toISOString(),
-      steps: [
-        { name: 'validate', status: 'running' },
-        { name: 'create_agent', status: 'pending' },
-        { name: 'deploy_agent', status: 'pending' },
-      ],
-      current_step: 0,
-    });
+    // Start deployment in the store (this persists across modal closes)
+    startDeployment(localSelectedOption);
     
     // Build credential configuration
     const credentials: CredentialConfig = { type: credentialType };
@@ -255,12 +257,17 @@ export default function DeploymentPanel({ onClose }: DeploymentPanelProps) {
     }
     
     try {
-      const endpoint = selectedOption === 'quick' ? '/api/deploy/quick' : '/api/deploy/full';
+      const endpoint = localSelectedOption === 'quick' ? '/api/deploy/quick' : '/api/deploy/full';
+      
+      // Generate YAML and parse it back to get a clean config without internal fields
+      const yamlContent = generateYAML(config);
+      const cleanConfig = yaml.load(yamlContent) as Record<string, any>;
+      const sanitizedConfig = sanitizeConfig(cleanConfig);
       
       const response = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ config, credentials }),
+        body: JSON.stringify({ config: sanitizedConfig, credentials }),
       });
       
       // Check content type to handle HTML error pages
@@ -287,16 +294,7 @@ export default function DeploymentPanel({ onClose }: DeploymentPanelProps) {
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : 'Failed to start deployment';
       setError(errorMsg);
-      setIsDeploying(false);
-      // Update deployment status to show failure
-      setDeploymentStatus(prev => prev ? {
-        ...prev,
-        status: 'failed',
-        error: errorMsg,
-        steps: prev.steps.map((step, idx) => 
-          idx === 0 ? { ...step, status: 'failed', error: errorMsg } : step
-        ),
-      } : null);
+      failDeployment(errorMsg);
     }
   };
 
@@ -554,9 +552,9 @@ export default function DeploymentPanel({ onClose }: DeploymentPanelProps) {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 {/* Quick Deploy */}
                 <button
-                  onClick={() => setSelectedOption('quick')}
+                  onClick={() => setLocalSelectedOption('quick')}
                   className={`p-4 rounded-xl border text-left transition-all ${
-                    selectedOption === 'quick'
+                    localSelectedOption === 'quick'
                       ? 'bg-blue-950/40 border-blue-500 ring-1 ring-blue-500/50'
                       : 'bg-slate-800/30 border-slate-700 hover:border-slate-600'
                   }`}
@@ -567,7 +565,7 @@ export default function DeploymentPanel({ onClose }: DeploymentPanelProps) {
                       <Zap className="w-4 h-4 text-blue-400" />
                     </div>
                     <span className="font-medium text-slate-100">Quick Deploy</span>
-                    {selectedOption === 'quick' && (
+                    {localSelectedOption === 'quick' && (
                       <CheckCircle2 className="w-4 h-4 text-blue-400 ml-auto" />
                     )}
                   </div>
@@ -588,9 +586,9 @@ export default function DeploymentPanel({ onClose }: DeploymentPanelProps) {
 
                 {/* Full Deploy */}
                 <button
-                  onClick={() => setSelectedOption('full')}
+                  onClick={() => setLocalSelectedOption('full')}
                   className={`p-4 rounded-xl border text-left transition-all ${
-                    selectedOption === 'full'
+                    localSelectedOption === 'full'
                       ? 'bg-purple-950/40 border-purple-500 ring-1 ring-purple-500/50'
                       : 'bg-slate-800/30 border-slate-700 hover:border-slate-600'
                   } ${!validation.deployment_options.full.available ? 'opacity-50 cursor-not-allowed' : ''}`}
@@ -601,7 +599,7 @@ export default function DeploymentPanel({ onClose }: DeploymentPanelProps) {
                       <Layers className="w-4 h-4 text-purple-400" />
                     </div>
                     <span className="font-medium text-slate-100">Full Pipeline</span>
-                    {selectedOption === 'full' && (
+                    {localSelectedOption === 'full' && (
                       <CheckCircle2 className="w-4 h-4 text-purple-400 ml-auto" />
                     )}
                   </div>
@@ -637,9 +635,16 @@ export default function DeploymentPanel({ onClose }: DeploymentPanelProps) {
           {deploymentStatus && (
             <div className="space-y-4">
               <div className="flex items-center justify-between">
-                <h4 className="text-xs font-medium text-slate-400 uppercase tracking-wide">
-                  Deployment Progress
-                </h4>
+                <div className="flex items-center gap-2">
+                  <h4 className="text-xs font-medium text-slate-400 uppercase tracking-wide">
+                    Deployment Progress
+                  </h4>
+                  {isDeploying && (
+                    <span className="text-[10px] text-blue-400 bg-blue-500/20 px-2 py-0.5 rounded">
+                      Running in background
+                    </span>
+                  )}
+                </div>
                 {getOverallStatusBadge()}
               </div>
               
@@ -738,22 +743,32 @@ export default function DeploymentPanel({ onClose }: DeploymentPanelProps) {
 
           {/* Actions */}
           <div className="flex items-center justify-between pt-4 border-t border-slate-700">
-            <Button variant="ghost" onClick={validateConfig} disabled={isValidating}>
-              <RefreshCw className={`w-4 h-4 ${isValidating ? 'animate-spin' : ''}`} />
-              Revalidate
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button variant="ghost" onClick={validateConfig} disabled={isValidating || isDeploying}>
+                <RefreshCw className={`w-4 h-4 ${isValidating ? 'animate-spin' : ''}`} />
+                Revalidate
+              </Button>
+              
+              {/* Show "New Deployment" button when deployment is complete or failed */}
+              {(deploymentStatus?.status === 'completed' || deploymentStatus?.status === 'failed') && (
+                <Button variant="ghost" onClick={resetDeployment}>
+                  <Rocket className="w-4 h-4" />
+                  New Deployment
+                </Button>
+              )}
+            </div>
             
             <div className="flex items-center gap-3">
               {onClose && (
                 <Button variant="secondary" onClick={onClose}>
-                  Cancel
+                  {isDeploying ? 'Close (continues in background)' : 'Close'}
                 </Button>
               )}
               
               <Button
                 variant="primary"
                 onClick={handleDeploy}
-                disabled={!validation.valid || isDeploying || deploymentStatus?.status === 'completed'}
+                disabled={!validation.valid || isDeploying || !canStartNewDeployment()}
               >
                 {isDeploying ? (
                   <>
@@ -768,7 +783,7 @@ export default function DeploymentPanel({ onClose }: DeploymentPanelProps) {
                 ) : (
                   <>
                     <Rocket className="w-4 h-4" />
-                    Deploy {selectedOption === 'quick' ? 'Quick' : 'Full Pipeline'}
+                    Deploy {localSelectedOption === 'quick' ? 'Quick' : 'Full Pipeline'}
                   </>
                 )}
               </Button>

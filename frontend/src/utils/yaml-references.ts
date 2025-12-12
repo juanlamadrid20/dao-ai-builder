@@ -440,3 +440,32 @@ function deepEqual(a: any, b: any): boolean {
   
   return false;
 }
+
+/**
+ * Store for section-level anchor overrides.
+ * Maps section name (e.g., 'memory') to custom anchor name (e.g., 'custom_memory').
+ */
+let sectionAnchorOverrides: Record<string, string> = {};
+
+/**
+ * Set a custom anchor name for a section-level key.
+ * This is used when the config has a refName that differs from the section name.
+ */
+export function setSectionAnchor(sectionName: string, anchorName: string): void {
+  sectionAnchorOverrides[sectionName] = anchorName;
+}
+
+/**
+ * Get the anchor name for a section-level key.
+ * Returns the custom anchor name if set, otherwise null.
+ */
+export function getSectionAnchor(sectionName: string): string | null {
+  return sectionAnchorOverrides[sectionName] || null;
+}
+
+/**
+ * Clear all section anchor overrides.
+ */
+export function clearSectionAnchors(): void {
+  sectionAnchorOverrides = {};
+}
