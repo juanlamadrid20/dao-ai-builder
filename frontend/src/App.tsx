@@ -4,6 +4,7 @@ import Sidebar from './components/layout/Sidebar';
 import ConfigPanel from './components/layout/ConfigPanel';
 import PreviewPanel from './components/layout/PreviewPanel';
 import Header from './components/layout/Header';
+import NotificationBar from './components/ui/NotificationBar';
 
 export type ActiveSection = 'overview' | 'variables' | 'service_principals' | 'schemas' | 'resources' | 'retrievers' | 'tools' | 'guardrails' | 'memory' | 'prompts' | 'agents' | 'app';
 
@@ -42,6 +43,9 @@ function App() {
           )}
         </div>
       </div>
+      
+      {/* Notification Bar for inline messages */}
+      <NotificationBar />
     </div>
   );
 }

@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Plus, Trash2, Shield, Sparkles, Loader2 } from 'lucide-react';
+import { useState, ChangeEvent } from 'react';
+import { Plus, Trash2, Shield, Sparkles, Loader2, Pencil } from 'lucide-react';
 import { useConfigStore } from '@/stores/configStore';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
@@ -8,6 +8,9 @@ import Textarea from '../ui/Textarea';
 import Card from '../ui/Card';
 import Modal from '../ui/Modal';
 import Badge from '../ui/Badge';
+import { normalizeRefNameWhileTyping } from '@/utils/name-utils';
+import { safeDelete } from '@/utils/safe-delete';
+import { useYamlScrollStore } from '@/stores/yamlScrollStore';
 
 // AI Guardrail prompt generation API
 async function generateGuardrailPromptWithAI(params: {
@@ -65,14 +68,17 @@ If you find ANY issues with the response, do NOT set pass to True. Instead, prov
 {outputs}`;
 
 export default function GuardrailsSection() {
-  const { config, addGuardrail, removeGuardrail } = useConfigStore();
+  const { config, addGuardrail, updateGuardrail, removeGuardrail } = useConfigStore();
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [editingKey, setEditingKey] = useState<string | null>(null);
   const [formData, setFormData] = useState({
-    name: '',
+    refName: '', // YAML key (reference name) - independent of guardrail name
+    name: '',    // Guardrail's internal name
     modelKey: '',
     prompt: DEFAULT_GUARDRAIL_PROMPT,
     numRetries: '3',
   });
+  const [refNameManuallyEdited, setRefNameManuallyEdited] = useState(false);
   
   // AI Assistant state
   const [isGeneratingPrompt, setIsGeneratingPrompt] = useState(false);
@@ -112,6 +118,43 @@ export default function GuardrailsSection() {
   const guardrails = config.guardrails || {};
   const llms = config.resources?.llms || {};
 
+  const resetForm = () => {
+    setFormData({
+      refName: '',
+      name: '',
+      modelKey: '',
+      prompt: DEFAULT_GUARDRAIL_PROMPT,
+      numRetries: '3',
+    });
+    setEditingKey(null);
+    setShowAiInput(false);
+    setAiContext('');
+    setSelectedCriteria(['accuracy', 'completeness', 'clarity', 'helpfulness', 'safety']);
+    setRefNameManuallyEdited(false);
+  };
+
+  const { scrollToAsset } = useYamlScrollStore();
+
+  // Handle editing an existing guardrail
+  const handleEdit = (key: string, guardrail: { name: string; model: { name: string }; prompt: string; num_retries?: number }) => {
+    scrollToAsset(key);
+    setEditingKey(key);
+    setRefNameManuallyEdited(true); // Preserve the reference name when editing
+    
+    // Find the LLM key by matching the model name
+    const llmKey = Object.entries(llms).find(([, llm]) => llm.name === guardrail.model.name)?.[0] || '';
+    
+    setFormData({
+      refName: key, // YAML key (reference name)
+      name: guardrail.name,
+      modelKey: llmKey,
+      prompt: guardrail.prompt,
+      numRetries: String(guardrail.num_retries ?? 3),
+    });
+    
+    setIsModalOpen(true);
+  };
+
   const llmOptions = Object.entries(llms).map(([key, llm]) => ({
     value: key,
     label: `${key} (${llm.name})`,
@@ -120,20 +163,35 @@ export default function GuardrailsSection() {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     
-    if (formData.name && formData.modelKey && llms[formData.modelKey]) {
-      addGuardrail({
+    // Require both refName and name
+    if (!formData.refName.trim() || !formData.name.trim()) return;
+    
+    if (formData.modelKey && llms[formData.modelKey]) {
+      const guardrailConfig = {
         name: formData.name,
         model: llms[formData.modelKey],
         prompt: formData.prompt,
         num_retries: parseInt(formData.numRetries),
-      });
+      };
       
-      setFormData({
-        name: '',
-        modelKey: '',
-        prompt: DEFAULT_GUARDRAIL_PROMPT,
-        numRetries: '3',
-      });
+      // Use refName as the YAML key
+      const refName = formData.refName.trim();
+      
+      if (editingKey) {
+        // When editing, handle reference name change
+        if (editingKey !== refName) {
+          // Reference name changed - remove old and add new
+          removeGuardrail(editingKey);
+          addGuardrail(refName, guardrailConfig);
+        } else {
+          // Reference name unchanged - just update
+          updateGuardrail(refName, guardrailConfig);
+        }
+      } else {
+        addGuardrail(refName, guardrailConfig);
+      }
+      
+      resetForm();
       setIsModalOpen(false);
     }
   };
@@ -170,14 +228,22 @@ export default function GuardrailsSection() {
       ) : (
         <div className="grid gap-4">
           {Object.entries(guardrails).map(([key, guardrail]) => (
-            <Card key={key} variant="interactive" className="group">
+            <Card 
+              key={key} 
+              variant="interactive" 
+              className="group cursor-pointer"
+              onClick={() => handleEdit(key, guardrail)}
+            >
               <div className="flex items-start justify-between">
                 <div className="flex items-start space-x-4">
                   <div className="w-10 h-10 rounded-lg bg-emerald-500/20 flex items-center justify-center flex-shrink-0">
                     <Shield className="w-5 h-5 text-emerald-400" />
                   </div>
                   <div>
-                    <h3 className="font-medium text-white">{guardrail.name}</h3>
+                    <h3 className="font-medium text-white">{key}</h3>
+                    {key !== guardrail.name && (
+                      <p className="text-xs text-slate-500">name: {guardrail.name}</p>
+                    )}
                     <p className="text-sm text-slate-400">
                       Model: {guardrail.model.name}
                     </p>
@@ -189,9 +255,24 @@ export default function GuardrailsSection() {
                 <div className="flex items-center space-x-3">
                   <Badge variant="success">retries: {guardrail.num_retries ?? 3}</Badge>
                   <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={(e: React.MouseEvent) => {
+                      e.stopPropagation();
+                      handleEdit(key, guardrail);
+                    }}
+                    title="Edit guardrail"
+                  >
+                    <Pencil className="w-4 h-4" />
+                  </Button>
+                  <Button
                     variant="danger"
                     size="sm"
-                    onClick={() => removeGuardrail(key)}
+                    onClick={(e: React.MouseEvent) => {
+                      e.stopPropagation();
+                      safeDelete('Guardrail', key, () => removeGuardrail(key));
+                    }}
+                    title="Delete guardrail"
                   >
                     <Trash2 className="w-4 h-4" />
                   </Button>
@@ -202,12 +283,15 @@ export default function GuardrailsSection() {
         </div>
       )}
 
-      {/* Add Guardrail Modal */}
+      {/* Add/Edit Guardrail Modal */}
       <Modal
         isOpen={isModalOpen}
-        onClose={() => setIsModalOpen(false)}
-        title="Add Guardrail"
-        description="Configure a safety check for agent responses"
+        onClose={() => {
+          setIsModalOpen(false);
+          resetForm();
+        }}
+        title={editingKey ? 'Edit Guardrail' : 'Add Guardrail'}
+        description={editingKey ? 'Modify the guardrail configuration' : 'Configure a safety check for agent responses'}
         size="lg"
       >
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -219,21 +303,40 @@ export default function GuardrailsSection() {
           
           <div className="grid grid-cols-2 gap-4">
             <Input
-              label="Guardrail Name"
+              label="Reference Name"
               placeholder="e.g., llm_judge_guardrail"
-              value={formData.name}
-              onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+              value={formData.refName}
+              onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                const newRefName = normalizeRefNameWhileTyping(e.target.value);
+                setFormData({ 
+                  ...formData, 
+                  refName: newRefName,
+                  // Auto-generate guardrail name if not manually different
+                  name: !refNameManuallyEdited && formData.name === formData.refName ? newRefName : formData.name,
+                });
+                setRefNameManuallyEdited(true);
+              }}
+              hint="YAML key (spaces become underscores)"
               required
             />
             <Select
               label="Judge LLM"
               options={llmOptions}
               value={formData.modelKey}
-              onChange={(e) => setFormData({ ...formData, modelKey: e.target.value })}
+              onChange={(e: ChangeEvent<HTMLSelectElement>) => setFormData({ ...formData, modelKey: e.target.value })}
               placeholder="Select an LLM..."
               required
             />
           </div>
+          
+          <Input
+            label="Guardrail Name"
+            placeholder="e.g., llm_judge"
+            value={formData.name}
+            onChange={(e: ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, name: e.target.value })}
+            hint="The name property inside the guardrail config (can differ from reference name)"
+            required
+          />
 
           {/* Evaluation Prompt with AI Assistant */}
           <div className="space-y-2">
@@ -408,11 +511,14 @@ export default function GuardrailsSection() {
           />
 
           <div className="flex justify-end space-x-3 pt-4">
-            <Button variant="secondary" type="button" onClick={() => setIsModalOpen(false)}>
+            <Button variant="secondary" type="button" onClick={() => {
+              setIsModalOpen(false);
+              resetForm();
+            }}>
               Cancel
             </Button>
             <Button type="submit" disabled={llmOptions.length === 0}>
-              Add Guardrail
+              {editingKey ? 'Save Changes' : 'Add Guardrail'}
             </Button>
           </div>
         </form>

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Settings, Save, GitBranch, Users, ArrowRightLeft, Plus, Trash2, Info, Bot, X, Tag, Wrench, Sparkles, Loader2 } from 'lucide-react';
+import { Settings, Save, GitBranch, Users, ArrowRightLeft, Plus, Trash2, Info, Bot, X, Tag, Wrench, Sparkles, Loader2, Variable } from 'lucide-react';
 import { useConfigStore } from '@/stores/configStore';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
@@ -52,6 +52,15 @@ interface HandoffConfig {
   agentName: string;
   type: HandoffType;
   targets: string[];
+}
+
+// Environment variable entry - value can be from a variable reference or manual entry
+type EnvVarSource = 'variable' | 'manual';
+interface EnvVarEntry {
+  name: string;
+  source: EnvVarSource;
+  value: string; // For manual entry
+  variableRef: string; // For variable reference
 }
 
 // Helper to convert a string to snake_case
@@ -137,6 +146,28 @@ export default function AppConfigSection() {
     })) || []
   );
   const [newPrincipal, setNewPrincipal] = useState('');
+
+  // Environment variables state
+  const [envVars, setEnvVars] = useState<EnvVarEntry[]>(() => {
+    const existingEnvVars = app?.environment_vars || {};
+    return Object.entries(existingEnvVars).map(([name, value]) => {
+      // Check if value is a variable reference (starts with *)
+      if (typeof value === 'string' && value.startsWith('*')) {
+        return {
+          name,
+          source: 'variable' as EnvVarSource,
+          value: '',
+          variableRef: value.slice(1), // Remove the * prefix
+        };
+      }
+      return {
+        name,
+        source: 'manual' as EnvVarSource,
+        value: String(value),
+        variableRef: '',
+      };
+    });
+  });
 
   // Selected agents for the app - default to ALL agents if none are explicitly configured
   const [selectedAgents, setSelectedAgents] = useState<string[]>(() => {
@@ -290,6 +321,18 @@ export default function AppConfigSection() {
     // Check permissions
     const savedPermissions = app?.permissions || [];
     if (JSON.stringify(savedPermissions) !== JSON.stringify(permissions)) return true;
+    
+    // Check environment variables
+    const savedEnvVars = app?.environment_vars || {};
+    const currentEnvVarsDict: Record<string, string> = {};
+    envVars.forEach(ev => {
+      if (ev.name) {
+        currentEnvVarsDict[ev.name] = ev.source === 'variable' && ev.variableRef 
+          ? `*${ev.variableRef}` 
+          : ev.value;
+      }
+    });
+    if (JSON.stringify(savedEnvVars) !== JSON.stringify(currentEnvVarsDict)) return true;
     
     return false;
   })();
@@ -450,6 +493,27 @@ export default function AppConfigSection() {
         entitlements: p.entitlements || [],
       })) || []
     );
+    
+    // Sync environment variables
+    const existingEnvVars = app?.environment_vars || {};
+    setEnvVars(
+      Object.entries(existingEnvVars).map(([name, value]) => {
+        if (typeof value === 'string' && value.startsWith('*')) {
+          return {
+            name,
+            source: 'variable' as EnvVarSource,
+            value: '',
+            variableRef: value.slice(1),
+          };
+        }
+        return {
+          name,
+          source: 'manual' as EnvVarSource,
+          value: String(value),
+          variableRef: '',
+        };
+      })
+    );
   }, [app, agents, llms, tools]);
 
   // Auto-adjust orchestration pattern based on number of selected agents
@@ -563,6 +627,18 @@ export default function AppConfigSection() {
       .map(key => agents[key])
       .filter(Boolean);
 
+    // Build environment_vars dict
+    const environmentVars: Record<string, string> = {};
+    envVars.forEach(ev => {
+      if (ev.name) {
+        if (ev.source === 'variable' && ev.variableRef) {
+          environmentVars[ev.name] = `*${ev.variableRef}`;
+        } else if (ev.source === 'manual' && ev.value) {
+          environmentVars[ev.name] = ev.value;
+        }
+      }
+    });
+
     updateApp({
       name: formData.name,
       description: formData.description || undefined,
@@ -579,6 +655,7 @@ export default function AppConfigSection() {
       agents: appAgents.length > 0 ? appAgents : undefined,
       tags: Object.keys(tags).length > 0 ? tags : undefined,
       permissions: permissions.length > 0 ? permissions : undefined,
+      environment_vars: Object.keys(environmentVars).length > 0 ? environmentVars : undefined,
     });
   };
 
@@ -1293,6 +1370,146 @@ export default function AppConfigSection() {
             </div>
           </div>
         </div>
+      </Card>
+
+      {/* Environment Variables */}
+      <Card className="space-y-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center space-x-2">
+            <Variable className="w-5 h-5 text-slate-400" />
+            <h3 className="font-medium text-white">Environment Variables</h3>
+          </div>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => setEnvVars([...envVars, { name: '', source: 'variable', value: '', variableRef: '' }])}
+          >
+            <Plus className="w-4 h-4 mr-1" />
+            Add Variable
+          </Button>
+        </div>
+        <p className="text-sm text-slate-400">
+          Configure environment variables for your application. Values can reference configured variables or be set manually.
+        </p>
+
+        {envVars.length === 0 ? (
+          <div className="bg-slate-800/50 rounded-lg p-3 text-slate-400 text-sm">
+            No environment variables configured. Add variables to set runtime configuration.
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {envVars.map((envVar, index) => (
+              <div key={index} className="p-3 bg-slate-800/30 rounded-lg border border-slate-700 space-y-3">
+                <div className="flex items-start justify-between">
+                  <div className="flex-1 grid grid-cols-2 gap-3">
+                    {/* Variable Name */}
+                    <Input
+                      label="Name"
+                      placeholder="e.g., API_KEY"
+                      value={envVar.name}
+                      onChange={(e) => {
+                        const newEnvVars = [...envVars];
+                        newEnvVars[index].name = e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, '_');
+                        setEnvVars(newEnvVars);
+                      }}
+                    />
+                    
+                    {/* Value Source Toggle + Value */}
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <label className="text-sm font-medium text-slate-300">Value</label>
+                        <div className="inline-flex rounded-lg bg-slate-900/50 p-0.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const newEnvVars = [...envVars];
+                              newEnvVars[index].source = 'variable';
+                              newEnvVars[index].value = '';
+                              setEnvVars(newEnvVars);
+                            }}
+                            className={`px-2 py-0.5 text-[10px] rounded-md font-medium transition-all duration-150 ${
+                              envVar.source === 'variable'
+                                ? 'bg-violet-500/20 text-violet-400 border border-violet-500/40'
+                                : 'text-slate-400 border border-transparent hover:text-slate-300'
+                            }`}
+                          >
+                            Variable
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const newEnvVars = [...envVars];
+                              newEnvVars[index].source = 'manual';
+                              newEnvVars[index].variableRef = '';
+                              setEnvVars(newEnvVars);
+                            }}
+                            className={`px-2 py-0.5 text-[10px] rounded-md font-medium transition-all duration-150 ${
+                              envVar.source === 'manual'
+                                ? 'bg-violet-500/20 text-violet-400 border border-violet-500/40'
+                                : 'text-slate-400 border border-transparent hover:text-slate-300'
+                            }`}
+                          >
+                            Manual
+                          </button>
+                        </div>
+                      </div>
+                      
+                      {envVar.source === 'variable' ? (
+                        <Select
+                          value={envVar.variableRef}
+                          onChange={(e) => {
+                            const newEnvVars = [...envVars];
+                            newEnvVars[index].variableRef = e.target.value;
+                            setEnvVars(newEnvVars);
+                          }}
+                          options={[
+                            { value: '', label: 'Select a variable...' },
+                            ...Object.keys(config.variables || {}).map((v) => ({ value: v, label: v })),
+                          ]}
+                        />
+                      ) : (
+                        <Input
+                          value={envVar.value}
+                          onChange={(e) => {
+                            const newEnvVars = [...envVars];
+                            newEnvVars[index].value = e.target.value;
+                            setEnvVars(newEnvVars);
+                          }}
+                          placeholder="Enter value..."
+                        />
+                      )}
+                    </div>
+                  </div>
+                  
+                  <button
+                    type="button"
+                    onClick={() => setEnvVars(envVars.filter((_, i) => i !== index))}
+                    className="ml-3 mt-6 text-slate-400 hover:text-red-400"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+                
+                {/* Preview */}
+                {envVar.name && (
+                  <div className="text-xs text-slate-500">
+                    YAML: <code className="bg-slate-900/50 px-1 rounded text-slate-400">
+                      {envVar.name}: {envVar.source === 'variable' && envVar.variableRef 
+                        ? `*${envVar.variableRef}` 
+                        : envVar.value || '""'}
+                    </code>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {Object.keys(config.variables || {}).length === 0 && (
+          <p className="text-xs text-slate-500">
+            Configure variables in the Variables section to reference them here.
+          </p>
+        )}
       </Card>
 
       {/* Tags */}

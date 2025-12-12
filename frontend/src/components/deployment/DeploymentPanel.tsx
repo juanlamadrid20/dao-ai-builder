@@ -151,14 +151,29 @@ export default function DeploymentPanel({ onClose }: DeploymentPanelProps) {
         body: JSON.stringify({ config }),
       });
       
+      // Check content type to handle HTML error pages
+      const contentType = response.headers.get('content-type');
+      const isJson = contentType && contentType.includes('application/json');
+      
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Validation failed');
+        if (isJson) {
+          const errorData = await response.json();
+          throw new Error(errorData.error || 'Validation failed');
+        } else {
+          // Server returned HTML (likely an error page)
+          console.error('Server returned non-JSON response:', response.status, response.statusText);
+          throw new Error(`Server error: ${response.status} ${response.statusText}. The server may be experiencing issues.`);
+        }
+      }
+      
+      if (!isJson) {
+        throw new Error('Server returned unexpected response format');
       }
       
       const result = await response.json();
       setValidation(result);
     } catch (err) {
+      console.error('Validation error:', err);
       setError(err instanceof Error ? err.message : 'Failed to validate configuration');
     } finally {
       setIsValidating(false);
@@ -248,9 +263,23 @@ export default function DeploymentPanel({ onClose }: DeploymentPanelProps) {
         body: JSON.stringify({ config, credentials }),
       });
       
+      // Check content type to handle HTML error pages
+      const contentType = response.headers.get('content-type');
+      const isJson = contentType && contentType.includes('application/json');
+      
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Deployment failed to start');
+        if (isJson) {
+          const errorData = await response.json();
+          throw new Error(errorData.error || 'Deployment failed to start');
+        } else {
+          // Server returned HTML (likely an error page)
+          console.error('Server returned non-JSON response:', response.status, response.statusText);
+          throw new Error(`Server error: ${response.status} ${response.statusText}. Check server logs for details.`);
+        }
+      }
+      
+      if (!isJson) {
+        throw new Error('Server returned unexpected response format');
       }
       
       const result = await response.json();

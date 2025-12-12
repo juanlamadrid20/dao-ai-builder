@@ -95,14 +95,14 @@ interface ConfigState {
   removeRetriever: (name: string) => void;
   
   // Tools
-  addTool: (tool: ToolModel) => void;
-  updateTool: (name: string, updates: Partial<ToolModel>) => void;
-  removeTool: (name: string) => void;
+  addTool: (refName: string, tool: ToolModel) => void;
+  updateTool: (refName: string, updates: Partial<ToolModel>) => void;
+  removeTool: (refName: string) => void;
   
   // Guardrails
-  addGuardrail: (guardrail: GuardrailModel) => void;
-  updateGuardrail: (name: string, updates: Partial<GuardrailModel>) => void;
-  removeGuardrail: (name: string) => void;
+  addGuardrail: (refName: string, guardrail: GuardrailModel) => void;
+  updateGuardrail: (refName: string, updates: Partial<GuardrailModel>) => void;
+  removeGuardrail: (refName: string) => void;
   
   // Prompts
   addPrompt: (refName: string, prompt: PromptModel) => void;
@@ -729,13 +729,13 @@ export const useConfigStore = create<ConfigState>((set) => ({
       };
     }),
   
-  addTool: (tool) =>
+  addTool: (refName, tool) =>
     set((state) => ({
       config: {
         ...state.config,
         tools: {
           ...state.config.tools,
-          [tool.name]: tool,
+          [refName]: tool,
         },
       },
     })),
@@ -766,13 +766,13 @@ export const useConfigStore = create<ConfigState>((set) => ({
       };
     }),
   
-  addGuardrail: (guardrail) =>
+  addGuardrail: (refName, guardrail) =>
     set((state) => ({
       config: {
         ...state.config,
         guardrails: {
           ...state.config.guardrails,
-          [guardrail.name]: guardrail,
+          [refName]: guardrail,
         },
       },
     })),

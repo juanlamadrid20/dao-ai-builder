@@ -1,17 +1,18 @@
 import { useState, ChangeEvent } from 'react';
-import { Plus, Trash2, Key, Lock, FileCode, Layers } from 'lucide-react';
+import { Plus, Trash2, Key, Lock, FileCode, Layers, Pencil } from 'lucide-react';
 import Card from '@/components/ui/Card';
 import Button from '@/components/ui/Button';
 import Input from '@/components/ui/Input';
 import Select from '@/components/ui/Select';
 import { useConfigStore } from '@/stores/configStore';
+import { safeDelete } from '@/utils/safe-delete';
+import { useYamlScrollStore } from '@/stores/yamlScrollStore';
 import {
   VariableModel,
   VariableType,
   PrimitiveVariableModel,
   EnvironmentVariableModel,
   SecretVariableModel,
-  CompositeVariableModel,
 } from '@/types/dao-ai-types';
 
 interface VariableFormData {
@@ -73,36 +74,136 @@ const getVariableIcon = (type: VariableType) => {
 };
 
 const getVariableTypeFromModel = (variable: VariableModel): VariableType => {
-  if ('type' in variable) {
-    return variable.type;
+  // Cast to unknown record for flexible property checking
+  // YAML imports may not have explicit 'type' field
+  const varObj = variable as unknown as Record<string, unknown>;
+  
+  // First check for explicit type field
+  if (varObj.type && typeof varObj.type === 'string') {
+    return varObj.type as VariableType;
   }
+  
+  // Infer type from structure (YAML imports may not have explicit type)
+  // Check for composite (has 'options' array)
+  if ('options' in varObj && Array.isArray(varObj.options)) {
+    return 'composite';
+  }
+  
+  // Check for secret (has 'scope' and 'secret')
+  if ('scope' in varObj && 'secret' in varObj) {
+    return 'secret';
+  }
+  
+  // Check for environment variable (has 'env')
+  if ('env' in varObj) {
+    return 'env';
+  }
+  
+  // Check for primitive (has 'value')
+  if ('value' in varObj) {
+    return 'primitive';
+  }
+  
+  // Default to primitive
   return 'primitive';
 };
 
 const getVariableDescription = (variable: VariableModel): string => {
   const type = getVariableTypeFromModel(variable);
+  const varObj = variable as unknown as Record<string, unknown>;
+  
   switch (type) {
     case 'primitive':
-      return `Value: ${(variable as PrimitiveVariableModel).value}`;
+      return `Value: ${varObj.value ?? ''}`;
     case 'env':
-      return `Env: ${(variable as EnvironmentVariableModel).env}`;
+      return `Env: ${varObj.env ?? ''}`;
     case 'secret':
-      const secret = variable as SecretVariableModel;
-      return `Secret: ${secret.scope}/${secret.secret}`;
+      return `Secret: ${varObj.scope ?? ''}/${varObj.secret ?? ''}`;
     case 'composite':
-      const comp = variable as CompositeVariableModel;
-      return `${comp.options.length} fallback option(s)`;
+      const options = (varObj.options as unknown[]) || [];
+      return `${options.length} fallback option(s)`;
     default:
       return '';
   }
 };
 
 export function VariablesSection() {
-  const { config, addVariable, removeVariable } = useConfigStore();
+  const { config, addVariable, updateVariable, removeVariable } = useConfigStore();
   const [isAdding, setIsAdding] = useState(false);
+  const [editingKey, setEditingKey] = useState<string | null>(null);
   const [formData, setFormData] = useState<VariableFormData>(defaultFormData);
 
   const variables = config.variables || {};
+
+  const { scrollToAsset } = useYamlScrollStore();
+
+  // Handle editing an existing variable
+  const handleEdit = (name: string, variable: VariableModel) => {
+    scrollToAsset(name);
+    setEditingKey(name);
+    
+    const varType = getVariableTypeFromModel(variable);
+    
+    const newFormData: VariableFormData = {
+      ...defaultFormData,
+      name,
+      type: varType,
+    };
+    
+    switch (varType) {
+      case 'primitive':
+        newFormData.primitiveValue = String((variable as PrimitiveVariableModel).value || '');
+        break;
+      case 'env':
+        const envVar = variable as EnvironmentVariableModel;
+        newFormData.envName = envVar.env || '';
+        newFormData.envDefault = envVar.default_value !== undefined ? String(envVar.default_value) : '';
+        break;
+      case 'secret':
+        const secretVar = variable as SecretVariableModel;
+        newFormData.secretScope = secretVar.scope || '';
+        newFormData.secretKey = secretVar.secret || '';
+        newFormData.secretDefault = secretVar.default_value !== undefined ? String(secretVar.default_value) : '';
+        break;
+      case 'composite':
+        // Cast to access options - may not have explicit 'type' field from YAML import
+        const compVarObj = variable as unknown as { options?: unknown[]; default_value?: unknown };
+        newFormData.compositeOptions = (compVarObj.options || []).map((opt) => {
+          // Handle options that may or may not have explicit type field
+          const optObj = opt as Record<string, unknown>;
+          
+          // Check for env variable (has 'env' field)
+          if ('env' in optObj) {
+            return { type: 'env' as const, envName: String(optObj.env || '') };
+          }
+          // Check for secret (has 'scope' and 'secret' fields)
+          if ('scope' in optObj && 'secret' in optObj) {
+            return { 
+              type: 'secret' as const, 
+              scope: String(optObj.scope || ''), 
+              secret: String(optObj.secret || '') 
+            };
+          }
+          // Check for primitive value
+          if ('value' in optObj) {
+            return { type: 'primitive' as const, value: String(optObj.value || '') };
+          }
+          // Default to primitive
+          return { type: 'primitive' as const, value: '' };
+        });
+        newFormData.compositeDefault = compVarObj.default_value !== undefined ? String(compVarObj.default_value) : '';
+        break;
+    }
+    
+    setFormData(newFormData);
+    setIsAdding(true);
+  };
+
+  const resetForm = () => {
+    setFormData(defaultFormData);
+    setEditingKey(null);
+    setIsAdding(false);
+  };
 
   const buildVariableModel = (): VariableModel => {
     switch (formData.type) {
@@ -143,13 +244,26 @@ export function VariablesSection() {
     }
   };
 
-  const handleAddVariable = () => {
+  const handleSubmit = () => {
     if (!formData.name.trim()) return;
     
     const variable = buildVariableModel();
-    addVariable(formData.name, variable);
-    setFormData(defaultFormData);
-    setIsAdding(false);
+    
+    if (editingKey) {
+      // When editing, handle name change
+      if (editingKey !== formData.name) {
+        // Name changed - remove old and add new
+        removeVariable(editingKey);
+        addVariable(formData.name, variable);
+      } else {
+        // Name unchanged - just update
+        updateVariable(editingKey, variable);
+      }
+    } else {
+      addVariable(formData.name, variable);
+    }
+    
+    resetForm();
   };
 
   const addCompositeOption = (type: 'env' | 'secret' | 'primitive') => {
@@ -192,6 +306,9 @@ export function VariablesSection() {
 
       {isAdding && (
         <Card className="p-4 space-y-4 border-blue-500/50">
+          <h3 className="text-lg font-medium text-white">
+            {editingKey ? 'Edit Variable' : 'Add Variable'}
+          </h3>
           <div className="grid grid-cols-2 gap-4">
             <Input
               label="Variable Name"
@@ -338,15 +455,12 @@ export function VariablesSection() {
           <div className="flex justify-end gap-2">
             <Button
               variant="secondary"
-              onClick={() => {
-                setIsAdding(false);
-                setFormData(defaultFormData);
-              }}
+              onClick={resetForm}
             >
               Cancel
             </Button>
-            <Button onClick={handleAddVariable} disabled={!formData.name.trim()}>
-              Add Variable
+            <Button onClick={handleSubmit} disabled={!formData.name.trim()}>
+              {editingKey ? 'Save Changes' : 'Add Variable'}
             </Button>
           </div>
         </Card>
@@ -373,7 +487,11 @@ export function VariablesSection() {
             const varType = getVariableTypeFromModel(variable as VariableModel);
             const Icon = getVariableIcon(varType);
             return (
-              <Card key={name} className="p-4">
+              <Card 
+                key={name} 
+                className="p-4 cursor-pointer hover:border-blue-500/50 transition-colors"
+                onClick={() => handleEdit(name, variable as VariableModel)}
+              >
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
                     <div className="p-2 bg-slate-700/50 rounded-lg">
@@ -391,8 +509,22 @@ export function VariablesSection() {
                       {varType}
                     </span>
                     <button
-                      onClick={() => removeVariable(name)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleEdit(name, variable as VariableModel);
+                      }}
+                      className="text-slate-400 hover:text-blue-400 p-1"
+                      title="Edit variable"
+                    >
+                      <Pencil className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        safeDelete('Variable', name, () => removeVariable(name));
+                      }}
                       className="text-slate-400 hover:text-red-400 p-1"
+                      title="Delete variable"
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>

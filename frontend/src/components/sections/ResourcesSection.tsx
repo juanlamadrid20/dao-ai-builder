@@ -10,8 +10,15 @@
  * - Warehouses (with warehouse_id selector)
  * - Connections (UC connections)
  */
-import { useState, ChangeEvent } from 'react';
+import { useState, useEffect, ChangeEvent } from 'react';
 import { normalizeRefNameWhileTyping } from '@/utils/name-utils';
+import { safeDelete } from '@/utils/safe-delete';
+import { useYamlScrollStore } from '@/stores/yamlScrollStore';
+
+// Helper to scroll YAML preview to a specific asset
+const scrollToAsset = (refName: string) => {
+  useYamlScrollStore.getState().scrollToAsset(refName);
+};
 
 /**
  * Safely check if a value is a string that starts with a prefix.
@@ -512,6 +519,7 @@ function LLMsPanel() {
   };
 
   const handleEdit = (key: string, llm: LLMModel) => {
+    scrollToAsset(key);
     setEditingKey(key);
     // Convert fallbacks: if it matches a configured LLM key, prefix with ref:
     const convertedFallbacks = (llm.fallbacks || []).map(f => {
@@ -686,7 +694,7 @@ function LLMsPanel() {
                   size="sm"
                   onClick={(e) => {
                     e.stopPropagation();
-                    removeLLM(key);
+                    safeDelete('LLM', key, () => removeLLM(key));
                   }}
                 >
                   <Trash2 className="w-4 h-4 text-red-400" />
@@ -973,6 +981,7 @@ function GenieRoomsPanel({ showForm, setShowForm, editingKey, setEditingKey, onC
   });
 
   const handleEdit = (key: string) => {
+    scrollToAsset(key);
     const room = genieRooms[key];
     const spaceId = safeString(room.space_id);
     
@@ -1025,7 +1034,7 @@ function GenieRoomsPanel({ showForm, setShowForm, editingKey, setEditingKey, onC
   };
 
   const handleDelete = (key: string) => {
-    removeGenieRoom(key);
+    safeDelete('Genie Room', key, () => removeGenieRoom(key));
   };
 
   const genieSpaceOptions = [
@@ -1331,6 +1340,7 @@ function WarehousesPanel({ showForm, setShowForm, editingKey, setEditingKey, onC
   });
 
   const handleEdit = (key: string) => {
+    scrollToAsset(key);
     const wh = warehouses[key];
     const warehouseId = safeString(wh.warehouse_id);
     // Detect if the warehouse_id is a variable reference
@@ -1390,7 +1400,7 @@ function WarehousesPanel({ showForm, setShowForm, editingKey, setEditingKey, onC
   };
 
   const handleDelete = (key: string) => {
-    removeWarehouse(key);
+    safeDelete('Warehouse', key, () => removeWarehouse(key));
   };
 
   // Status mapper for warehouses
@@ -1724,6 +1734,7 @@ function TablesPanel({ showForm, setShowForm, editingKey, setEditingKey, onClose
   );
 
   const handleEdit = (key: string) => {
+    scrollToAsset(key);
     const table = tables[key];
     // Detect if using schema reference
     const isSchemaRef = table.schema && Object.entries(configuredSchemas).some(
@@ -2076,6 +2087,7 @@ function VolumesPanel({ showForm, setShowForm, editingKey, setEditingKey, onClos
   );
 
   const handleEdit = (key: string) => {
+    scrollToAsset(key);
     const volume = volumes[key];
     const isSchemaRef = volume.schema && Object.entries(configuredSchemas).some(
       ([, s]) => s.catalog_name === volume.schema?.catalog_name && s.schema_name === volume.schema?.schema_name
@@ -2383,20 +2395,56 @@ function FunctionsPanel({ showForm, setShowForm, editingKey, setEditingKey, onCl
     on_behalf_of_user: false,
   });
 
-  const { data: schemas, loading: schemasLoading } = useSchemas(formData.catalog_name || null);
+  // Get current schema info for filtering - always have fallback to formData values
+  // Prioritize: 1) configured schema (if schemaRef is set), 2) formData values
+  // formData.catalog_name and formData.schema_name are always populated when editing
+  const getEffectiveCatalog = (): string => {
+    // If using a schema reference and it exists in configured schemas, use it
+    if (schemaSource === 'reference' && formData.schemaRef && configuredSchemas[formData.schemaRef]) {
+      return configuredSchemas[formData.schemaRef].catalog_name;
+    }
+    // Fall back to direct form values (always populated when editing)
+    return formData.catalog_name;
+  };
   
-  // Get current schema info for filtering
-  const currentCatalog = schemaSource === 'reference' && formData.schemaRef 
-    ? configuredSchemas[formData.schemaRef]?.catalog_name 
-    : formData.catalog_name;
-  const currentSchema = schemaSource === 'reference' && formData.schemaRef 
-    ? configuredSchemas[formData.schemaRef]?.schema_name 
-    : formData.schema_name;
+  const getEffectiveSchema = (): string => {
+    // If using a schema reference and it exists in configured schemas, use it
+    if (schemaSource === 'reference' && formData.schemaRef && configuredSchemas[formData.schemaRef]) {
+      return configuredSchemas[formData.schemaRef].schema_name;
+    }
+    // Fall back to direct form values (always populated when editing)
+    return formData.schema_name;
+  };
   
-  const { data: functionsList, loading: functionsLoading } = useFunctions(
+  const currentCatalog = getEffectiveCatalog();
+  const currentSchema = getEffectiveSchema();
+  
+  // Use currentCatalog for schemas fetch when in reference mode (to properly load schema list)
+  const { data: schemas, loading: schemasLoading } = useSchemas(currentCatalog || null);
+  
+  // Fetch functions for the current catalog/schema - these should always be populated when editing
+  const { data: functionsList, loading: functionsLoading, refetch: refetchFunctions } = useFunctions(
     currentCatalog || null,
     currentSchema || null
   );
+  
+  // Debug: Log when editing to verify catalog/schema values
+  useEffect(() => {
+    if (editingKey && showForm) {
+      console.log('[FunctionsPanel] Editing function:', editingKey);
+      console.log('[FunctionsPanel] schemaSource:', schemaSource);
+      console.log('[FunctionsPanel] formData:', formData);
+      console.log('[FunctionsPanel] currentCatalog:', currentCatalog);
+      console.log('[FunctionsPanel] currentSchema:', currentSchema);
+      console.log('[FunctionsPanel] functionsList:', functionsList);
+      
+      // If we have catalog and schema but no functions list, try refetching
+      if (currentCatalog && currentSchema && !functionsList && !functionsLoading) {
+        console.log('[FunctionsPanel] Triggering refetch...');
+        refetchFunctions();
+      }
+    }
+  }, [editingKey, showForm, schemaSource, formData, currentCatalog, currentSchema, functionsList, functionsLoading, refetchFunctions]);
   
   // Filter out functions that have already been added from the same schema
   const alreadyAddedFunctions = Object.values(functions)
@@ -2410,20 +2458,29 @@ function FunctionsPanel({ showForm, setShowForm, editingKey, setEditingKey, onCl
   );
 
   const handleEdit = (key: string) => {
+    scrollToAsset(key);
     const func = functions[key];
+    const funcCatalog = func.schema?.catalog_name || '';
+    const funcSchema = func.schema?.schema_name || '';
+    
     const isSchemaRef = func.schema && Object.entries(configuredSchemas).some(
-      ([, s]) => s.catalog_name === func.schema?.catalog_name && s.schema_name === func.schema?.schema_name
+      ([, s]) => s.catalog_name === funcCatalog && s.schema_name === funcSchema
     );
     const schemaRefKey = isSchemaRef ? Object.entries(configuredSchemas).find(
-      ([, s]) => s.catalog_name === func.schema?.catalog_name && s.schema_name === func.schema?.schema_name
+      ([, s]) => s.catalog_name === funcCatalog && s.schema_name === funcSchema
     )?.[0] : '';
     
-    setSchemaSource(schemaRefKey ? 'reference' : 'direct');
+    // Always set both schema source and form data together
+    // Ensure catalog_name and schema_name are always populated for function lookup
+    const newSchemaSource = schemaRefKey ? 'reference' : 'direct';
+    setSchemaSource(newSchemaSource);
     setFormData({
       refName: key,
       schemaRef: schemaRefKey || '',
-      catalog_name: func.schema?.catalog_name || '',
-      schema_name: func.schema?.schema_name || '',
+      // Always populate catalog_name and schema_name from the function being edited
+      // This ensures useFunctions can look up functions even if schemaRef lookup fails
+      catalog_name: funcCatalog,
+      schema_name: funcSchema,
       name: func.name || '',
       on_behalf_of_user: func.on_behalf_of_user || false,
     });
@@ -2485,7 +2542,7 @@ function FunctionsPanel({ showForm, setShowForm, editingKey, setEditingKey, onCl
   };
 
   const handleDelete = (key: string) => {
-    removeFunction(key);
+    safeDelete('Function', key, () => removeFunction(key));
   };
 
   const hasConfiguredSchemas = Object.keys(configuredSchemas).length > 0;
@@ -2748,6 +2805,7 @@ function ConnectionsPanel({ showForm, setShowForm, editingKey, setEditingKey, on
   });
 
   const handleEdit = (key: string) => {
+    scrollToAsset(key);
     const conn = connections[key];
     setFormData({
       refName: key,
@@ -2780,7 +2838,7 @@ function ConnectionsPanel({ showForm, setShowForm, editingKey, setEditingKey, on
   };
 
   const handleDelete = (key: string) => {
-    removeConnection(key);
+    safeDelete('Connection', key, () => removeConnection(key));
   };
 
   return (
@@ -3114,6 +3172,7 @@ function DatabasesPanel({ showForm, setShowForm, editingKey, setEditingKey, onCl
   const [formData, setFormData] = useState<DatabaseFormData>(defaultDatabaseForm);
 
   const handleEdit = (key: string) => {
+    scrollToAsset(key);
     const db = databases[key];
     if (db) {
       const isVariableRef = (val?: unknown): boolean => safeStartsWith(val, '*');
@@ -3156,7 +3215,7 @@ function DatabasesPanel({ showForm, setShowForm, editingKey, setEditingKey, onCl
   };
 
   const handleDelete = (key: string) => {
-    removeDatabase(key);
+    safeDelete('Database', key, () => removeDatabase(key));
   };
 
   const getCredentialValue = (source: CredentialSource, manualValue: string, variableName: string): string => {
@@ -4006,6 +4065,7 @@ function VectorStoresPanel({ showForm, setShowForm, editingKey, setEditingKey, o
   }));
   
   const handleEdit = (key: string) => {
+    scrollToAsset(key);
     const vs = vectorStores[key];
     if (vs) {
       // Check if the index schema matches a configured schema
@@ -4157,7 +4217,7 @@ function VectorStoresPanel({ showForm, setShowForm, editingKey, setEditingKey, o
   };
 
   const handleDelete = (key: string) => {
-    removeVectorStore(key);
+    safeDelete('Vector Store', key, () => removeVectorStore(key));
   };
 
   const handleSave = () => {

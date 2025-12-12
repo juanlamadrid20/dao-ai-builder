@@ -23,6 +23,25 @@ export function MemorySection() {
   const memory = config.memory;
   const databases = config.resources?.databases || {};
   
+  // Helper function to find database key by matching properties
+  const findDatabaseKey = (db: { name?: string; instance_name?: string } | undefined): string => {
+    if (!db) return '';
+    
+    // First, check if the database object matches any configured database
+    for (const [key, configuredDb] of Object.entries(databases)) {
+      // Match by instance_name (most reliable)
+      if (db.instance_name && configuredDb.instance_name === db.instance_name) {
+        return key;
+      }
+      // Match by name
+      if (db.name && configuredDb.name === db.name) {
+        return key;
+      }
+    }
+    
+    return '';
+  };
+  
   const [checkpointerEnabled, setCheckpointerEnabled] = useState(!!memory?.checkpointer);
   const [storeEnabled, setStoreEnabled] = useState(!!memory?.store);
   
@@ -33,7 +52,7 @@ export function MemorySection() {
     memory?.checkpointer?.name || 'default_checkpointer'
   );
   const [checkpointerDatabase, setCheckpointerDatabase] = useState(
-    memory?.checkpointer?.database?.name || ''
+    findDatabaseKey(memory?.checkpointer?.database)
   );
   
   const [storeType, setStoreType] = useState<StorageType>(
@@ -43,7 +62,7 @@ export function MemorySection() {
     memory?.store?.name || 'default_store'
   );
   const [storeDatabase, setStoreDatabase] = useState(
-    memory?.store?.database?.name || ''
+    findDatabaseKey(memory?.store?.database)
   );
   const [storeDims, setStoreDims] = useState(memory?.store?.dims || 1536);
   const [storeNamespace, setStoreNamespace] = useState(
@@ -59,18 +78,18 @@ export function MemorySection() {
       setCheckpointerEnabled(true);
       setCheckpointerType(memory.checkpointer.type || 'memory');
       setCheckpointerName(memory.checkpointer.name || 'default_checkpointer');
-      setCheckpointerDatabase(memory.checkpointer.database?.name || '');
+      setCheckpointerDatabase(findDatabaseKey(memory.checkpointer.database));
     }
     if (memory?.store) {
       setStoreEnabled(true);
       setStoreType(memory.store.type || 'memory');
       setStoreName(memory.store.name || 'default_store');
-      setStoreDatabase(memory.store.database?.name || '');
+      setStoreDatabase(findDatabaseKey(memory.store.database));
       setStoreDims(memory.store.dims || 1536);
       setStoreNamespace(memory.store.namespace || '{user_id}');
       setStoreEmbeddingModel(memory.store.embedding_model?.name || 'databricks-gte-large-en');
     }
-  }, [memory]);
+  }, [memory, databases]);
   
   const buildMemoryModel = (): MemoryModel | undefined => {
     const newMemory: MemoryModel = {};

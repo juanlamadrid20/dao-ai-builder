@@ -11,6 +11,8 @@ import { useCatalogs, useSchemas } from '@/hooks/useDatabricks';
 import { isDatabricksConfigured } from '@/services/databricksNativeApi';
 import { SchemaModel } from '@/types/dao-ai-types';
 import { normalizeRefName, normalizeRefNameWhileTyping } from '@/utils/name-utils';
+import { safeDelete } from '@/utils/safe-delete';
+import { useYamlScrollStore } from '@/stores/yamlScrollStore';
 
 type SchemaMode = 'select' | 'create';
 
@@ -46,7 +48,10 @@ export default function SchemasSection() {
     setEditingKey(null);
   };
 
+  const { scrollToAsset } = useYamlScrollStore();
+
   const handleEdit = (key: string, schema: SchemaModel) => {
+    scrollToAsset(key);
     setEditingKey(key);
     setFormData({
       name: key,
@@ -167,7 +172,7 @@ export default function SchemasSection() {
                       size="sm"
                       onClick={(e) => {
                         e.stopPropagation();
-                        removeSchema(key);
+                        safeDelete('Schema', key, () => removeSchema(key));
                       }}
                     >
                       <Trash2 className="w-4 h-4" />

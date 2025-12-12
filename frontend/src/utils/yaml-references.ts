@@ -18,6 +18,12 @@ export interface AliasReference {
   lineNumber: number;
 }
 
+export interface MergeKeyReference {
+  anchorName: string;  // The anchor name being merged (without *)
+  path: string;        // The YAML path where the merge key is used
+  lineNumber: number;
+}
+
 export interface YamlReferences {
   anchors: AnchorDefinition[];
   aliases: AliasReference[];
@@ -30,6 +36,9 @@ export interface YamlReferences {
   // Map from key path to its original anchor name (when key differs from anchor)
   // e.g., "tools.insert_coffee_order_uc_tool" -> "insert_coffee_order_tool"
   keyToAnchorName: Record<string, string>;
+  // Merge key references (<<: *anchor_name)
+  // Map from path to anchor name being merged
+  mergeKeys: Record<string, string>;
 }
 
 /**
@@ -43,6 +52,7 @@ export function extractYamlReferences(yamlText: string): YamlReferences {
   const anchorPaths: Record<string, string> = {};
   const pathSuffixToAnchor: Record<string, string> = {};
   const keyToAnchorName: Record<string, string> = {};
+  const mergeKeys: Record<string, string> = {};
   
   const lines = yamlText.split('\n');
   const pathStack: { indent: number; key: string }[] = [];
@@ -68,9 +78,14 @@ export function extractYamlReferences(yamlText: string): YamlReferences {
     // Check if this is an array item (starts with -)
     const isArrayItem = /^\s*-/.test(line);
     
+    // Check for merge keys FIRST (<<: *anchor_name) before processing as regular key
+    // This ensures we capture the correct parent path for the merge
+    const mergeMatch = line.match(/<<:\s*\*(\w+)/);
+    
     // Extract key from the line (handle array items too)
+    // Skip the << key as it's a merge operator, not a regular key
     const keyMatch = line.match(/^\s*-?\s*([^:\s]+)\s*:/);
-    if (keyMatch) {
+    if (keyMatch && keyMatch[1] !== '<<') {
       const key = keyMatch[1];
       pathStack.push({ indent, key });
       // Reset array index tracking for this path
@@ -78,7 +93,7 @@ export function extractYamlReferences(yamlText: string): YamlReferences {
       arrayIndices.delete(newPath);
     }
     
-    // Current path (without array indices)
+    // Current path (without array indices) - this is now the PARENT path for merge keys
     const currentPath = pathStack.map(p => p.key).join('.');
     
     // For array items with aliases (like "- *genie_tool"), track the index
@@ -112,43 +127,75 @@ export function extractYamlReferences(yamlText: string): YamlReferences {
       }
     }
     
+    // Handle merge keys (<<: *anchor_name) - mergeMatch was detected earlier
+    if (mergeMatch) {
+      const mergeAnchorName = mergeMatch[1];
+      // The merge key applies to the current path (the parent object)
+      // e.g., if we're processing "<<: *ref" inside "function:", 
+      // currentPath is "tools.my_tool.function" (correct, since we skipped pushing <<)
+      const mergePath = currentPath;
+      
+      // Store the merge key reference - use the full path as the primary key
+      mergeKeys[mergePath] = mergeAnchorName;
+      
+      // Also store with suffix patterns for flexible matching
+      // This helps when the path format varies slightly between import and export
+      const pathParts = mergePath.split('.');
+      if (pathParts.length >= 2) {
+        // Store suffix patterns with the tool name for disambiguation
+        // e.g., "find_store_inventory_by_upc_uc_tool.function"
+        const suffix2 = pathParts.slice(-2).join('.');
+        mergeKeys[suffix2] = mergeAnchorName;
+        
+        if (pathParts.length >= 3) {
+          const suffix3 = pathParts.slice(-3).join('.');
+          mergeKeys[suffix3] = mergeAnchorName;
+        }
+      }
+      
+      console.log(`[extractYamlReferences] Found merge key at path '${mergePath}': <<: *${mergeAnchorName}`);
+    }
+    
     // Find alias references (*name) - but not within quotes or preceded by __REF__
     // Also handle cases where * is at the start of a value
-    const aliasMatches = line.matchAll(/(?<!["\w])\*(\w+)(?!["'])/g);
-    for (const match of aliasMatches) {
-      const aliasName = match[1];
-      // Skip if this is an anchor definition line (has both & and *)
-      if (line.includes(`&${aliasName}`)) continue;
-      
-      aliases.push({
-        name: aliasName,
-        path: aliasPath,
-        lineNumber: lineNum,
-      });
-      
-      if (!aliasUsage[aliasName]) {
-        aliasUsage[aliasName] = [];
-      }
-      aliasUsage[aliasName].push(aliasPath);
-      
-      // Store a mapping from the base path + anchor type to the alias name
-      // This helps with matching "agents.X.tools.N" to the correct tool reference
-      // Use a more specific key format: "parentKey.childKey=aliasName"
-      const pathParts = aliasPath.split('.');
-      if (pathParts.length >= 2) {
-        // Store with parent context to avoid collisions
-        // e.g., "agents.genie.tools.0" -> store as "genie.tools.0=genie_tool"
-        const contextKey = pathParts.slice(-3).join('.');
-        pathSuffixToAnchor[`${contextKey}=${aliasName}`] = aliasName;
+    // Skip merge key references as they are handled separately
+    if (!mergeMatch) {
+      const aliasMatches = line.matchAll(/(?<!["\w])\*(\w+)(?!["'])/g);
+      for (const match of aliasMatches) {
+        const aliasName = match[1];
+        // Skip if this is an anchor definition line (has both & and *)
+        if (line.includes(`&${aliasName}`)) continue;
         
-        // Also store simpler suffix but include the alias name to avoid collisions
-        const suffix = pathParts.slice(-2).join('.');
-        pathSuffixToAnchor[`${suffix}=${aliasName}`] = aliasName;
+        aliases.push({
+          name: aliasName,
+          path: aliasPath,
+          lineNumber: lineNum,
+        });
+        
+        if (!aliasUsage[aliasName]) {
+          aliasUsage[aliasName] = [];
+        }
+        aliasUsage[aliasName].push(aliasPath);
+        
+        // Store a mapping from the base path + anchor type to the alias name
+        // This helps with matching "agents.X.tools.N" to the correct tool reference
+        // Use a more specific key format: "parentKey.childKey=aliasName"
+        const pathParts = aliasPath.split('.');
+        if (pathParts.length >= 2) {
+          // Store with parent context to avoid collisions
+          // e.g., "agents.genie.tools.0" -> store as "genie.tools.0=genie_tool"
+          const contextKey = pathParts.slice(-3).join('.');
+          pathSuffixToAnchor[`${contextKey}=${aliasName}`] = aliasName;
+          
+          // Also store simpler suffix but include the alias name to avoid collisions
+          const suffix = pathParts.slice(-2).join('.');
+          pathSuffixToAnchor[`${suffix}=${aliasName}`] = aliasName;
+        }
       }
     }
   }
   
-  return { anchors, aliases, aliasUsage, anchorPaths, pathSuffixToAnchor, keyToAnchorName };
+  return { anchors, aliases, aliasUsage, anchorPaths, pathSuffixToAnchor, keyToAnchorName, mergeKeys };
 }
 
 /**
@@ -237,6 +284,71 @@ export function shouldHaveAnchor(path: string): string | null {
 }
 
 /**
+ * Check if a path should use a merge key (<<: *anchor_name).
+ * Returns the anchor name if a merge key should be used, null otherwise.
+ */
+/**
+ * Get all anchor names that are required by merge keys.
+ * These anchors MUST be present in the output YAML.
+ */
+export function getRequiredMergeAnchors(): string[] {
+  if (!currentReferences || !currentReferences.mergeKeys) return [];
+  
+  // Return unique anchor names that are referenced by merge keys
+  return [...new Set(Object.values(currentReferences.mergeKeys))];
+}
+
+export function shouldUseMergeKey(path: string): string | null {
+  if (!currentReferences || !currentReferences.mergeKeys) return null;
+  
+  const normalizedPath = path.toLowerCase().replace(/-/g, '_');
+  const pathParts = path.split('.');
+  
+  // Strategy 1: Exact path match (highest priority)
+  for (const [mergePath, anchorName] of Object.entries(currentReferences.mergeKeys)) {
+    const normalizedMergePath = mergePath.toLowerCase().replace(/-/g, '_');
+    if (normalizedPath === normalizedMergePath) {
+      console.log(`[shouldUseMergeKey] Exact match for '${path}': ${anchorName}`);
+      return anchorName;
+    }
+  }
+  
+  // Strategy 2: Path suffix match - check if either ends with the other
+  // This handles cases like "tools.my_tool.function" matching "my_tool.function"
+  for (const [mergePath, anchorName] of Object.entries(currentReferences.mergeKeys)) {
+    const normalizedMergePath = mergePath.toLowerCase().replace(/-/g, '_');
+    // Only match if the suffix includes at least 2 parts (tool_name.function)
+    const mergePathParts = normalizedMergePath.split('.');
+    if (mergePathParts.length >= 2) {
+      if (normalizedPath.endsWith(normalizedMergePath)) {
+        console.log(`[shouldUseMergeKey] Path ends with merge path '${path}' -> '${mergePath}': ${anchorName}`);
+        return anchorName;
+      }
+      if (normalizedMergePath.endsWith(normalizedPath) && pathParts.length >= 2) {
+        console.log(`[shouldUseMergeKey] Merge path ends with path '${mergePath}' -> '${path}': ${anchorName}`);
+        return anchorName;
+      }
+    }
+  }
+  
+  // Strategy 3: Check if the last 2 or 3 parts match any stored merge path
+  if (pathParts.length >= 2) {
+    const suffix2 = pathParts.slice(-2).join('.').toLowerCase().replace(/-/g, '_');
+    const suffix3 = pathParts.length >= 3 ? pathParts.slice(-3).join('.').toLowerCase().replace(/-/g, '_') : '';
+    
+    for (const [mergePath, anchorName] of Object.entries(currentReferences.mergeKeys)) {
+      const normalizedMergePath = mergePath.toLowerCase().replace(/-/g, '_');
+      if (normalizedMergePath === suffix2 || (suffix3 && normalizedMergePath === suffix3)) {
+        console.log(`[shouldUseMergeKey] Suffix pattern match for '${path}': ${anchorName}`);
+        return anchorName;
+      }
+    }
+  }
+  
+  return null;
+}
+
+/**
  * Merge new references into the current references.
  * Used when the user adds new items that should use references.
  */
@@ -249,6 +361,7 @@ export function addReference(anchorName: string, anchorPath: string, aliasPath: 
       anchorPaths: {},
       pathSuffixToAnchor: {},
       keyToAnchorName: {},
+      mergeKeys: {},
     };
   }
   

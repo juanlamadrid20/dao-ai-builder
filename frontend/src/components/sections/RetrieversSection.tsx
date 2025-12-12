@@ -38,6 +38,8 @@ function generateFilterId(): string {
 }
 
 import { normalizeRefName, normalizeRefNameWhileTyping } from '@/utils/name-utils';
+import { safeDelete } from '@/utils/safe-delete';
+import { useYamlScrollStore } from '@/stores/yamlScrollStore';
 
 // Common reranking models available in FlashRank
 const RERANK_MODELS = [
@@ -113,7 +115,10 @@ export default function RetrieversSection() {
     setEditingKey(null);
   };
 
+  const { scrollToAsset } = useYamlScrollStore();
+
   const handleEdit = (key: string) => {
+    scrollToAsset(key);
     const retriever = retrievers[key];
     
     // Find the vector store reference by checking for matching vector store
@@ -492,7 +497,9 @@ export default function RetrieversSection() {
                 <Button
                   variant="ghost"
                   size="sm"
-                  onClick={() => removeRetriever(key)}
+                  onClick={() => {
+                    safeDelete('Retriever', key, () => removeRetriever(key));
+                  }}
                   className="text-red-400 hover:text-red-300"
                 >
                   <Trash2 className="w-4 h-4 mr-1" />

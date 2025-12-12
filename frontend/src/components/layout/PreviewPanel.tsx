@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { Copy, Check, FileCode, CheckCircle, XCircle, AlertCircle, Loader2, ChevronDown, ChevronUp, Lock, Unlock, AlertTriangle } from 'lucide-react';
 import { useConfigStore } from '@/stores/configStore';
+import { useYamlScrollStore } from '@/stores/yamlScrollStore';
 import { generateYAML } from '@/utils/yaml-generator';
 import { useConfigValidation } from '@/hooks/useValidation';
 import { extractYamlReferences, setYamlReferences } from '@/utils/yaml-references';
@@ -45,12 +46,93 @@ export default function PreviewPanel() {
     }
   }, [generatedYaml, editedYaml]);
 
-  // Sync scroll between textarea and line numbers
+  // Sync scroll between textarea and container (for edit mode)
   const handleScroll = useCallback(() => {
     if (textareaRef.current && lineNumbersRef.current) {
+      // Sync the container scroll with textarea scroll
       lineNumbersRef.current.scrollTop = textareaRef.current.scrollTop;
+      lineNumbersRef.current.scrollLeft = textareaRef.current.scrollLeft;
     }
   }, []);
+
+  // Handle scrolling to section or asset when requested
+  const { targetSection, targetAsset, scrollTimestamp, clearTarget } = useYamlScrollStore();
+  
+  // Calculate displayContent early for use in scroll effect
+  const displayContent = isLocked ? generatedYaml : editedYaml;
+  
+  useEffect(() => {
+    if (!targetSection && !targetAsset) return;
+    if (!lineNumbersRef.current) return;
+    
+    const content = displayContent;
+    const lines = content.split('\n');
+    let targetLine = -1;
+    
+    if (targetSection) {
+      // Map section names to YAML keys
+      const sectionMap: Record<string, string[]> = {
+        'schemas': ['schemas:'],
+        'variables': ['variables:'],
+        'service_principals': ['service_principals:'],
+        'resources': ['resources:'],
+        'retrievers': ['retrievers:'],
+        'tools': ['tools:'],
+        'guardrails': ['guardrails:'],
+        'memory': ['memory:'],
+        'prompts': ['prompts:'],
+        'agents': ['agents:'],
+        'app': ['app:'],
+      };
+      
+      const patterns = sectionMap[targetSection] || [`${targetSection}:`];
+      
+      // Find the line that starts with the section key (no indentation)
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        for (const pattern of patterns) {
+          if (line.startsWith(pattern)) {
+            targetLine = i;
+            break;
+          }
+        }
+        if (targetLine >= 0) break;
+      }
+    } else if (targetAsset) {
+      // Find the line with the asset's anchor definition (e.g., "my_tool: &my_tool")
+      const anchorPattern = new RegExp(`^\\s*${targetAsset}:\\s*&${targetAsset}`);
+      const simplePattern = new RegExp(`^\\s*${targetAsset}:`);
+      
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        // First try to match with anchor
+        if (anchorPattern.test(line)) {
+          targetLine = i;
+          break;
+        }
+        // Fall back to simple key match
+        if (simplePattern.test(line)) {
+          targetLine = i;
+          // Don't break - keep looking for an anchored version
+        }
+      }
+    }
+    
+    if (targetLine >= 0) {
+      // Calculate scroll position (each line is 1.5rem = 24px)
+      const lineHeight = 24;
+      const scrollTop = targetLine * lineHeight;
+      
+      // Scroll with some padding at the top
+      lineNumbersRef.current.scrollTo({
+        top: Math.max(0, scrollTop - 48),
+        behavior: 'smooth',
+      });
+    }
+    
+    // Clear the target after scrolling
+    clearTarget();
+  }, [targetSection, targetAsset, scrollTimestamp, displayContent, clearTarget]);
 
   const handleCopy = async () => {
     await navigator.clipboard.writeText(isLocked ? generatedYaml : editedYaml);
@@ -267,8 +349,6 @@ export default function PreviewPanel() {
     return null;
   };
 
-  const displayContent = isLocked ? generatedYaml : editedYaml;
-
   return (
     <div className="h-full flex flex-col bg-slate-950">
       {/* Header */}
@@ -379,40 +459,42 @@ export default function PreviewPanel() {
       )}
 
       {/* Content */}
-      <div className="flex-1 overflow-hidden flex">
-        {/* Line Numbers */}
-        <div 
-          ref={lineNumbersRef}
-          className="w-12 bg-slate-900/50 border-r border-slate-800 overflow-hidden font-mono text-sm"
-          style={{ lineHeight: '1.5rem' }}
-        >
-          <div className="py-4">
-            {renderLineNumbers(displayContent)}
+      <div className="flex-1 overflow-auto" ref={lineNumbersRef}>
+        <div className="flex min-h-full">
+          {/* Line Numbers */}
+          <div 
+            className="w-12 bg-slate-900/50 border-r border-slate-800 font-mono text-sm flex-shrink-0 sticky left-0"
+            style={{ lineHeight: '1.5rem' }}
+          >
+            <div className="py-4">
+              {renderLineNumbers(displayContent)}
+            </div>
           </div>
-        </div>
-        
-        {/* Code Area */}
-        <div className="flex-1 overflow-auto">
-          {isLocked ? (
-            // Read-only highlighted view
-            <pre className="code-block text-sm p-4" style={{ lineHeight: '1.5rem' }}>
-              {highlightYAML(displayContent)}
-            </pre>
-          ) : (
-            // Editable textarea
-            <textarea
-              ref={textareaRef}
-              value={editedYaml}
-              onChange={(e) => handleYamlChange(e.target.value)}
-              onScroll={handleScroll}
-              spellCheck={false}
-              className="w-full h-full p-4 bg-transparent text-slate-300 font-mono text-sm resize-none focus:outline-none"
-              style={{ 
-                lineHeight: '1.5rem',
-                tabSize: 2
-              }}
-            />
-          )}
+          
+          {/* Code Area */}
+          <div className="flex-1 min-w-0">
+            {isLocked ? (
+              // Read-only highlighted view
+              <pre className="code-block text-sm p-4" style={{ lineHeight: '1.5rem' }}>
+                {highlightYAML(displayContent)}
+              </pre>
+            ) : (
+              // Editable textarea
+              <textarea
+                ref={textareaRef}
+                value={editedYaml}
+                onChange={(e) => handleYamlChange(e.target.value)}
+                onScroll={handleScroll}
+                spellCheck={false}
+                className="w-full h-full p-4 bg-transparent text-slate-300 font-mono text-sm resize-none focus:outline-none"
+                style={{ 
+                  lineHeight: '1.5rem',
+                  tabSize: 2,
+                  minHeight: '100%'
+                }}
+              />
+            )}
+          </div>
         </div>
       </div>
 

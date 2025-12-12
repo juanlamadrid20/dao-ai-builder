@@ -3,6 +3,8 @@ import { Key, Plus, Edit2, Trash2 } from 'lucide-react';
 import { useConfigStore } from '@/stores/configStore';
 import { ServicePrincipalModel, AppConfig } from '@/types/dao-ai-types';
 import { normalizeRefNameWhileTyping } from '@/utils/name-utils';
+import { safeDelete } from '@/utils/safe-delete';
+import { useYamlScrollStore } from '@/stores/yamlScrollStore';
 import Card from '../ui/Card';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
@@ -96,7 +98,10 @@ export default function ServicePrincipalsSection() {
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [formData, setFormData] = useState<SPFormData>(defaultSPForm);
 
+  const { scrollToAsset } = useYamlScrollStore();
+
   const handleEdit = (key: string) => {
+    scrollToAsset(key);
     const sp = servicePrincipals[key];
     if (sp) {
       const isVariableRef = (val?: unknown): boolean => safeStartsWith(val, '*');
@@ -152,7 +157,7 @@ export default function ServicePrincipalsSection() {
   };
 
   const handleDelete = (key: string) => {
-    removeServicePrincipal(key);
+    safeDelete('Service Principal', key, () => removeServicePrincipal(key));
   };
 
   const isClientIdValid = formData.clientIdSource === 'variable' ? !!formData.clientIdVariable : !!formData.client_id;

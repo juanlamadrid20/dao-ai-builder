@@ -17,6 +17,7 @@ import {
 import { clsx } from 'clsx';
 import { ActiveSection } from '@/App';
 import { AppConfig } from '@/types/dao-ai-types';
+import { useYamlScrollStore } from '@/stores/yamlScrollStore';
 
 interface SidebarProps {
   activeSection: ActiveSection;
@@ -48,6 +49,16 @@ const navItems: NavItem[] = [
 ];
 
 export default function Sidebar({ activeSection, onSectionChange, config }: SidebarProps) {
+  const { scrollToSection } = useYamlScrollStore();
+  
+  const handleSectionClick = (section: ActiveSection) => {
+    onSectionChange(section);
+    // Scroll YAML preview to the section (skip 'overview' as it has no YAML section)
+    if (section !== 'overview') {
+      scrollToSection(section);
+    }
+  };
+
   const getItemCount = (section: ActiveSection): number => {
     switch (section) {
       case 'overview':
@@ -114,7 +125,7 @@ export default function Sidebar({ activeSection, onSectionChange, config }: Side
             return (
               <button
                 key={item.id}
-                onClick={() => onSectionChange(item.id)}
+                onClick={() => handleSectionClick(item.id)}
                 className={clsx(
                   'w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-left transition-all duration-200',
                   isActive

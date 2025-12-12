@@ -1311,9 +1311,9 @@ def list_prompts():
                 if var in os.environ:
                     del os.environ[var]
             
-            # Set DATABRICKS_HOST
-            os.environ['DATABRICKS_HOST'] = host
-            log('info', f"Set DATABRICKS_HOST={host}")
+            # Set DATABRICKS_HOST (ensure https:// scheme)
+            os.environ['DATABRICKS_HOST'] = normalize_host(host)
+            log('info', f"Set DATABRICKS_HOST={normalize_host(host)}")
             
             if use_sp_auth:
                 # Use service principal authentication
@@ -1621,8 +1621,8 @@ def get_prompt_details():
                 if var in os.environ:
                     del os.environ[var]
             
-            # Set DATABRICKS_HOST
-            os.environ['DATABRICKS_HOST'] = host
+            # Set DATABRICKS_HOST (ensure https:// scheme)
+            os.environ['DATABRICKS_HOST'] = normalize_host(host)
             
             if use_sp_auth:
                 os.environ['DATABRICKS_CLIENT_ID'] = sp_client_id
@@ -1890,8 +1890,8 @@ def get_prompt_template():
                 if var in os.environ:
                     del os.environ[var]
             
-            # Set DATABRICKS_HOST
-            os.environ['DATABRICKS_HOST'] = host
+            # Set DATABRICKS_HOST (ensure https:// scheme)
+            os.environ['DATABRICKS_HOST'] = normalize_host(host)
             
             # Get token for authentication
             token: str | None = None
@@ -2003,7 +2003,7 @@ def get_prompt_template():
                 import mlflow
                 mlflow.set_tracking_uri("databricks")
                 
-                os.environ['DATABRICKS_HOST'] = host
+                os.environ['DATABRICKS_HOST'] = normalize_host(host)
                 os.environ['DATABRICKS_TOKEN'] = token
                 
                 prompt_uri = f"prompts:/{full_name}/{target_version_num}"
@@ -2130,8 +2130,8 @@ def register_prompt():
                 if var in os.environ:
                     del os.environ[var]
             
-            # Set DATABRICKS_HOST
-            os.environ['DATABRICKS_HOST'] = host
+            # Set DATABRICKS_HOST (ensure https:// scheme)
+            os.environ['DATABRICKS_HOST'] = normalize_host(host)
             
             if use_sp_auth:
                 # Use service principal authentication
@@ -3254,6 +3254,7 @@ def deploy_quick():
                 log('info', f"Using OBO/user token (source: {token_source}) for deployment")
         
         # Validate we have some form of authentication
+        use_service_principal = client_id is not None and client_secret is not None
         if not token and not use_service_principal:
             return jsonify({
                 'error': 'No authentication available',
@@ -3324,8 +3325,8 @@ def deploy_quick():
                         if var in os_module.environ:
                             del os_module.environ[var]
                     
-                    # Set the host
-                    os_module.environ['DATABRICKS_HOST'] = auth_host
+                    # Set the host (ensure https:// scheme)
+                    os_module.environ['DATABRICKS_HOST'] = normalize_host(auth_host)
                     
                     # Set the authentication method
                     if auth_token:

@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { Plus, Trash2, Bot, Edit2, ChevronDown, ChevronUp, FileText, Sparkles, Loader2 } from 'lucide-react';
+import { Plus, Trash2, Bot, Pencil, FileText, Sparkles, Loader2 } from 'lucide-react';
 import { useConfigStore } from '@/stores/configStore';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
@@ -11,6 +11,8 @@ import Badge from '../ui/Badge';
 import MultiSelect from '../ui/MultiSelect';
 import { AgentModel, AppConfig, PromptModel } from '@/types/dao-ai-types';
 import { normalizeRefNameWhileTyping } from '@/utils/name-utils';
+import { safeDelete } from '@/utils/safe-delete';
+import { useYamlScrollStore } from '@/stores/yamlScrollStore';
 
 /**
  * Check if a reference name already exists in the config.
@@ -138,7 +140,6 @@ export default function AgentsSection() {
   const { config, addAgent, removeAgent, updateAgent } = useConfigStore();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingAgent, setEditingAgent] = useState<string | null>(null);
-  const [expandedAgent, setExpandedAgent] = useState<string | null>(null);
 
   const agents = config.agents || {};
   const llms = config.resources?.llms || {};
@@ -166,9 +167,18 @@ export default function AgentsSection() {
     label: `${key} (${prompt.name})`,
   }));
 
+  const { scrollToAsset } = useYamlScrollStore();
+
   const handleEdit = (key: string) => {
     setEditingAgent(key);
     setIsModalOpen(true);
+  };
+
+  const handleCardClick = (key: string) => {
+    // Scroll to the asset in YAML preview
+    scrollToAsset(key);
+    // Open edit modal
+    handleEdit(key);
   };
 
   return (
@@ -203,11 +213,13 @@ export default function AgentsSection() {
       ) : (
         <div className="space-y-3">
           {Object.entries(agents).map(([key, agent]) => (
-            <Card key={key} className="overflow-hidden">
-              <div
-                className="flex items-center justify-between cursor-pointer"
-                onClick={() => setExpandedAgent(expandedAgent === key ? null : key)}
-              >
+            <Card 
+              key={key} 
+              variant="interactive"
+              className="group cursor-pointer"
+              onClick={() => handleCardClick(key)}
+            >
+              <div className="flex items-center justify-between">
                 <div className="flex items-center space-x-4">
                   <div className="w-10 h-10 rounded-lg bg-violet-500/20 flex items-center justify-center">
                     <Bot className="w-5 h-5 text-violet-400" />
@@ -224,62 +236,48 @@ export default function AgentsSection() {
                     {typeof agent.model === 'object' ? agent.model.name : agent.model}
                   </Badge>
                   <Badge variant="default">{agent.tools?.length || 0} tools</Badge>
-                  {expandedAgent === key ? (
-                    <ChevronUp className="w-5 h-5 text-slate-400" />
-                  ) : (
-                    <ChevronDown className="w-5 h-5 text-slate-400" />
-                  )}
+                  
+                  {/* Edit button */}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={(e: React.MouseEvent) => {
+                      e.stopPropagation();
+                      handleEdit(key);
+                    }}
+                    title="Edit agent"
+                  >
+                    <Pencil className="w-4 h-4" />
+                  </Button>
+                  {/* Delete button */}
+                  <Button
+                    variant="danger"
+                    size="sm"
+                    onClick={(e: React.MouseEvent) => {
+                      e.stopPropagation();
+                      safeDelete('Agent', key, () => removeAgent(key));
+                    }}
+                    title="Delete agent"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </Button>
                 </div>
               </div>
-
-              {expandedAgent === key && (
-                <div className="mt-4 pt-4 border-t border-slate-700 space-y-4">
-                  <div>
-                    <h4 className="text-sm font-medium text-slate-400 mb-2">System Prompt</h4>
-                    {typeof agent.prompt === 'object' && agent.prompt !== null ? (
-                      <div className="flex items-center space-x-2 bg-slate-800/50 p-3 rounded-lg">
-                        <FileText className="w-4 h-4 text-violet-400" />
-                        <span className="text-sm text-slate-300">
-                          Using configured prompt: <span className="text-violet-400 font-medium">{(agent.prompt as PromptModel).name}</span>
-                        </span>
-                      </div>
-                    ) : (
-                      <pre className="text-sm text-slate-300 bg-slate-800/50 p-3 rounded-lg overflow-auto max-h-40">
-                        {agent.prompt || 'No prompt configured'}
-                      </pre>
-                    )}
-                  </div>
-
-                  {agent.handoff_prompt && (
-                    <div>
-                      <h4 className="text-sm font-medium text-slate-400 mb-2">Handoff Prompt</h4>
-                      <pre className="text-sm text-slate-300 bg-slate-800/50 p-3 rounded-lg overflow-auto max-h-20">
-                        {agent.handoff_prompt}
-                      </pre>
-                    </div>
+              
+              {/* Additional info shown in the card */}
+              {agent.description && (
+                <p className="mt-2 text-sm text-slate-400 line-clamp-2">{agent.description}</p>
+              )}
+              
+              {/* Tools badges */}
+              {agent.tools && agent.tools.length > 0 && (
+                <div className="mt-3 flex flex-wrap gap-1">
+                  {agent.tools.slice(0, 5).map((tool, i) => (
+                    <Badge key={i} variant="warning" className="text-xs">{tool.name}</Badge>
+                  ))}
+                  {agent.tools.length > 5 && (
+                    <Badge variant="default" className="text-xs">+{agent.tools.length - 5} more</Badge>
                   )}
-
-                  {agent.tools && agent.tools.length > 0 && (
-                    <div>
-                      <h4 className="text-sm font-medium text-slate-400 mb-2">Tools</h4>
-                      <div className="flex flex-wrap gap-2">
-                        {agent.tools.map((tool, i) => (
-                          <Badge key={i} variant="warning">{tool.name}</Badge>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="flex justify-end space-x-2">
-                    <Button variant="secondary" size="sm" onClick={() => handleEdit(key)}>
-                      <Edit2 className="w-4 h-4" />
-                      Edit
-                    </Button>
-                    <Button variant="danger" size="sm" onClick={() => removeAgent(key)}>
-                      <Trash2 className="w-4 h-4" />
-                      Delete
-                    </Button>
-                  </div>
                 </div>
               )}
             </Card>

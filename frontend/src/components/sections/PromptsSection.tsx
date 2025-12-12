@@ -60,6 +60,8 @@ You are a helpful assistant. Your role is to provide accurate and useful informa
 `;
 
 import { normalizeRefName, normalizeRefNameWhileTyping } from '@/utils/name-utils';
+import { safeDelete } from '@/utils/safe-delete';
+import { useYamlScrollStore } from '@/stores/yamlScrollStore';
 
 // Helper function to generate a reference name from a prompt name
 function generateRefName(name: string): string {
@@ -102,6 +104,7 @@ export default function PromptsSection() {
   const [loadingTemplate, setLoadingTemplate] = useState(false);
   
   // Registration state
+  const [saveToRegistry, setSaveToRegistry] = useState(true); // Default to saving to registry
   const [isRegistering, setIsRegistering] = useState(false);
   const [registrationError, setRegistrationError] = useState<string | null>(null);
   const [registrationSuccess, setRegistrationSuccess] = useState<string | null>(null);
@@ -395,6 +398,7 @@ export default function PromptsSection() {
     setRefNameManuallyEdited(false);
     setRegistrationError(null);
     setRegistrationSuccess(null);
+    setSaveToRegistry(true); // Reset to default
   };
 
   // Handle selecting a configured schema (for existing prompts)
@@ -435,7 +439,10 @@ export default function PromptsSection() {
     }
   };
 
+  const { scrollToAsset } = useYamlScrollStore();
+
   const handleEdit = (key: string) => {
+    scrollToAsset(key);
     const prompt = prompts[key];
     
     // Detect if schema is a reference or direct
@@ -511,7 +518,9 @@ export default function PromptsSection() {
     }
 
     // For new prompts with a schema, register in MLflow Prompt Registry first
-    const shouldRegisterInRegistry = promptSource === 'new' && 
+    // Only register if saveToRegistry is checked
+    const shouldRegisterInRegistry = saveToRegistry && 
+                                      promptSource === 'new' && 
                                       !editingKey && 
                                       catalogName && 
                                       schemaName && 
@@ -555,9 +564,12 @@ export default function PromptsSection() {
       schema,
       description: formData.description || undefined,
       default_template: formData.default_template || undefined,
-      alias: formData.alias || undefined,
-      // Use the registered version if we just registered, otherwise use form value
-      version: registeredVersion ?? (formData.version ? parseInt(formData.version) : undefined),
+      // Only include alias and version if saved to registry
+      ...(saveToRegistry && {
+        alias: formData.alias || undefined,
+        // Use the registered version if we just registered, otherwise use form value
+        version: registeredVersion ?? (formData.version ? parseInt(formData.version) : undefined),
+      }),
       tags: Object.keys(formData.tags).length > 0 ? formData.tags : undefined,
       // Note: service_principal is used for authentication when fetching prompts,
       // but should not be saved as part of the prompt configuration
@@ -772,7 +784,9 @@ export default function PromptsSection() {
                   <Button
                     variant="danger"
                     size="sm"
-                    onClick={() => removePrompt(key)}
+                    onClick={() => {
+                      safeDelete('Prompt', key, () => removePrompt(key));
+                    }}
                   >
                     <Trash2 className="w-4 h-4" />
                   </Button>
@@ -1102,6 +1116,29 @@ export default function PromptsSection() {
             hint="Used as commit message when syncing to MLflow registry"
           />
 
+          {/* Save to Registry Checkbox - Only show for new prompts */}
+          {promptSource === 'new' && !editingKey && (
+            <div className="flex items-center space-x-3 p-3 bg-slate-800/50 rounded-lg">
+              <input
+                type="checkbox"
+                id="saveToRegistry"
+                checked={saveToRegistry}
+                onChange={(e) => setSaveToRegistry(e.target.checked)}
+                className="w-4 h-4 rounded border-slate-600 bg-slate-800 text-violet-500 focus:ring-violet-500 focus:ring-offset-0"
+              />
+              <div>
+                <label htmlFor="saveToRegistry" className="text-sm font-medium text-slate-300 cursor-pointer">
+                  Save to Prompt Registry
+                </label>
+                <p className="text-xs text-slate-500">
+                  {saveToRegistry 
+                    ? 'Prompt will be registered in MLflow with versioning and the configured alias'
+                    : 'Only the default_template will be saved to YAML (no registry, no alias)'}
+                </p>
+              </div>
+            </div>
+          )}
+
           {/* Schema Selection - Only show for new prompts */}
           {promptSource === 'new' && (
             <div className="space-y-3">
@@ -1176,8 +1213,8 @@ export default function PromptsSection() {
             </div>
           )}
 
-          {/* MLflow Registry Options - Only for new prompts */}
-          {promptSource === 'new' && (
+          {/* MLflow Registry Options - Only for new prompts when saving to registry */}
+          {promptSource === 'new' && saveToRegistry && (
             <div>
               <Input
                 label="Alias (Optional)"

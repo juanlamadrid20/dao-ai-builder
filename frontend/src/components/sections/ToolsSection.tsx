@@ -1,5 +1,5 @@
 import { useState, ChangeEvent } from 'react';
-import { Plus, Trash2, Wrench, RefreshCw, Globe, Database, MessageSquare, Search, Clock, Bot, Link2, UserCheck, ChevronDown, ChevronUp } from 'lucide-react';
+import { Plus, Trash2, Wrench, RefreshCw, Database, MessageSquare, Search, Clock, Bot, Link2, UserCheck, ChevronDown, ChevronUp, Pencil } from 'lucide-react';
 import { useConfigStore } from '@/stores/configStore';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
@@ -8,9 +8,12 @@ import Textarea from '../ui/Textarea';
 import Card from '../ui/Card';
 import Modal from '../ui/Modal';
 import Badge from '../ui/Badge';
-import { ToolFunctionModel, McpFunctionModel, HumanInTheLoopModel } from '@/types/dao-ai-types';
+import { ToolFunctionModel, McpFunctionModel, HumanInTheLoopModel, UnityCatalogFunctionModel } from '@/types/dao-ai-types';
 import { CatalogSelect, SchemaSelect, GenieSpaceSelect, VectorSearchEndpointSelect, UCConnectionSelect } from '../ui/DatabricksSelect';
 import { useFunctions, useVectorSearchIndexes } from '@/hooks/useDatabricks';
+import { normalizeRefNameWhileTyping } from '@/utils/name-utils';
+import { safeDelete } from '@/utils/safe-delete';
+import { useYamlScrollStore } from '@/stores/yamlScrollStore';
 
 // Resource source toggle type
 type ResourceSource = 'configured' | 'select';
@@ -115,22 +118,10 @@ const FACTORY_TOOLS = [
     icon: Search,
   },
   { 
-    value: 'dao_ai.tools.search_tool', 
-    label: 'Web Search Tool',
-    description: 'Search the web for information',
-    icon: Globe,
-  },
-  { 
     value: 'dao_ai.tools.create_send_slack_message_tool', 
     label: 'Slack Message Tool',
     description: 'Send messages to Slack channels',
     icon: MessageSquare,
-  },
-  { 
-    value: 'dao_ai.tools.create_uc_tools', 
-    label: 'Unity Catalog Tools',
-    description: 'Execute Unity Catalog functions',
-    icon: Database,
   },
   { 
     value: 'dao_ai.tools.create_agent_endpoint_tool', 
@@ -138,6 +129,16 @@ const FACTORY_TOOLS = [
     description: 'Call another deployed agent endpoint',
     icon: Bot,
   },
+  { 
+    value: 'custom', 
+    label: 'Custom Factory...',
+    description: 'Specify a custom factory function path',
+    icon: Wrench,
+  },
+];
+
+// Python tools (decorated with @tool, used directly without factory args)
+const PYTHON_TOOLS = [
   { 
     value: 'dao_ai.tools.current_time_tool', 
     label: 'Current Time Tool',
@@ -151,18 +152,27 @@ const FACTORY_TOOLS = [
     icon: Clock,
   },
   { 
-    value: 'databricks_langchain.vector_search_retriever_tool.VectorSearchRetrieverTool', 
-    label: 'Databricks Vector Search Retriever',
-    description: 'Native Databricks vector search retriever tool',
+    value: 'dao_ai.tools.search_tool', 
+    label: 'Web Search Tool',
+    description: 'Search the web using DuckDuckGo',
     icon: Search,
   },
   { 
     value: 'custom', 
-    label: 'Custom Factory...',
-    description: 'Specify a custom factory function path',
+    label: 'Custom Python Function...',
+    description: 'Specify a custom Python function path',
     icon: Wrench,
   },
 ];
+
+// Partial argument entry for Unity Catalog tools
+type PartialArgSource = 'manual' | 'variable' | 'service_principal';
+interface PartialArgEntry {
+  id: string;
+  name: string;
+  source: PartialArgSource;
+  value: string; // For manual: the value, for variable/sp: the ref name
+}
 
 // MCP tool source types
 const MCP_SOURCE_TYPES = [
@@ -294,18 +304,23 @@ function generateToolName(functionName: string): string {
     .replace(/_tool$/, '');
   
   // Normalize: lowercase, replace spaces/special chars with underscores
-  return baseName
+  const normalized = baseName
     .toLowerCase()
     .trim()
     .replace(/\s+/g, '_')
     .replace(/[^a-z0-9_]/g, '');
+  
+  // Append _tool suffix
+  return normalized ? `${normalized}_tool` : '';
 }
 
 export default function ToolsSection() {
-  const { config, addTool, removeTool } = useConfigStore();
+  const { config, addTool, updateTool, removeTool } = useConfigStore();
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [editingKey, setEditingKey] = useState<string | null>(null);
   const [formData, setFormData] = useState({
-    name: '',
+    refName: '', // YAML key (reference name) - independent of tool name
+    name: '',    // Tool's internal name
     type: 'factory' as 'factory' | 'python' | 'unity_catalog' | 'mcp',
     functionName: '',
     customFunctionName: '',
@@ -314,6 +329,8 @@ export default function ToolsSection() {
     genieSource: 'configured' as ResourceSource, // Default to configured
     genieRefName: '', // Reference to configured genie room
     genieSpaceId: '',
+    geniePersistConversation: true, // Default to true per factory function
+    genieTruncateResults: false, // Default to false per factory function
     // For Warehouse - with resource source
     warehouseSource: 'configured' as ResourceSource, // Default to configured
     warehouseRefName: '', // Reference to configured warehouse
@@ -332,11 +349,25 @@ export default function ToolsSection() {
     functionSource: 'configured' as ResourceSource, // Default to configured
     functionRefName: '', // Reference to configured function
     ucFunction: '',
+    // For Slack Message tool
+    slackConnectionSource: 'configured' as ResourceSource,
+    slackConnectionRefName: '',
+    slackChannelId: '',
+    slackChannelName: '',
+    // For Agent Endpoint tool
+    agentLlmSource: 'configured' as ResourceSource,
+    agentLlmRefName: '',
+    // For Vector Search tool - description is already handled via name
+    vectorSearchDescription: '',
+    // For Unity Catalog tool - partial args
+    ucPartialArgs: [] as PartialArgEntry[],
   });
   
   const [mcpForm, setMcpForm] = useState<MCPFormData>(defaultMCPFormData);
   const [hitlForm, setHitlForm] = useState<HITLFormData>(defaultHITLFormData);
   const [showHitlConfig, setShowHitlConfig] = useState(false);
+  const [nameManuallyEdited, setNameManuallyEdited] = useState(false);
+  const [refNameManuallyEdited, setRefNameManuallyEdited] = useState(false);
 
   // Get configured resources from store
   const configuredGenieRooms = config.resources?.genie_rooms || {};
@@ -345,6 +376,57 @@ export default function ToolsSection() {
   const configuredSchemas = config.schemas || {};
   const configuredFunctions = config.resources?.functions || {};
   const configuredConnections = config.resources?.connections || {};
+  const configuredLlms = config.resources?.llms || {};
+
+  // Helper functions to find configured resources by matching properties
+  const findConfiguredGenieRoom = (genieRoom: { space_id?: string; name?: string }): string | null => {
+    for (const [key, room] of Object.entries(configuredGenieRooms)) {
+      if (genieRoom.space_id && room.space_id === genieRoom.space_id) return key;
+      if (genieRoom.name && room.name === genieRoom.name) return key;
+    }
+    return null;
+  };
+
+  const findConfiguredRetriever = (retriever: { vector_store?: unknown }): string | null => {
+    // Try to match by vector_store reference or properties
+    for (const [key, ret] of Object.entries(configuredRetrievers)) {
+      // Simple match by comparing the stringified objects or specific properties
+      if (JSON.stringify(ret) === JSON.stringify(retriever)) return key;
+    }
+    return null;
+  };
+
+  const findConfiguredConnection = (connection: { name?: string }): string | null => {
+    for (const [key, conn] of Object.entries(configuredConnections)) {
+      if (connection.name && conn.name === connection.name) return key;
+    }
+    return null;
+  };
+
+  const findConfiguredLlm = (llm: { name?: string }): string | null => {
+    for (const [key, l] of Object.entries(configuredLlms)) {
+      if (llm.name && l.name === llm.name) return key;
+    }
+    return null;
+  };
+
+  const findConfiguredFunction = (func: { name?: string; schema?: { catalog_name?: string; schema_name?: string } }): string | null => {
+    for (const [key, f] of Object.entries(configuredFunctions)) {
+      if (func.name && f.name === func.name) {
+        // Also check schema match if both have schemas
+        if (func.schema && f.schema) {
+          const funcSchema = func.schema as { catalog_name?: string; schema_name?: string };
+          const fSchema = f.schema as { catalog_name?: string; schema_name?: string };
+          if (funcSchema.catalog_name === fSchema.catalog_name && funcSchema.schema_name === fSchema.schema_name) {
+            return key;
+          }
+        } else {
+          return key;
+        }
+      }
+    }
+    return null;
+  };
 
   // Build options for configured resources
   const configuredGenieOptions = Object.entries(configuredGenieRooms).map(([key, room]) => ({
@@ -371,12 +453,28 @@ export default function ToolsSection() {
     value: key,
     label: `${key} (${conn.name})`,
   }));
+  const configuredLlmOptions = Object.entries(configuredLlms).map(([key, llm]) => ({
+    value: key,
+    label: `${key} (${llm.name || key})`,
+  }));
 
   const tools = config.tools || {};
   const variables = config.variables || {};
+  const servicePrincipals = config.service_principals || {};
 
   // Get available variable names for dropdowns
   const variableNames = Object.keys(variables);
+  const servicePrincipalNames = Object.keys(servicePrincipals);
+
+  // Options for variable and service principal selects
+  const variableOptions = [
+    { value: '', label: 'Select a variable...' },
+    ...variableNames.map(v => ({ value: v, label: v })),
+  ];
+  const servicePrincipalOptions = [
+    { value: '', label: 'Select a service principal...' },
+    ...servicePrincipalNames.map(sp => ({ value: sp, label: sp })),
+  ];
 
   // Fetch UC functions when catalog/schema selected
   const { data: ucFunctions, loading: ucFunctionsLoading, refetch: refetchFunctions } = useFunctions(
@@ -509,7 +607,8 @@ export default function ToolsSection() {
     e.preventDefault();
     const funcName = formData.functionName === 'custom' ? formData.customFunctionName : formData.functionName;
     
-    if (!formData.name) return;
+    // Require both refName and name
+    if (!formData.refName.trim() || !formData.name.trim()) return;
 
     let functionConfig: ToolFunctionModel;
     const hitlConfig = buildHITLConfig();
@@ -525,6 +624,8 @@ export default function ToolsSection() {
             name: formData.name,
             description: `Tool for querying via Genie`,
             genie_room: `__REF__${formData.genieRefName}`,
+            persist_conversation: formData.geniePersistConversation,
+            truncate_results: formData.genieTruncateResults,
           };
         } else {
           // Direct selection - use space_id object
@@ -534,25 +635,57 @@ export default function ToolsSection() {
             genie_room: {
               space_id: formData.genieSpaceId,
             },
+            persist_conversation: formData.geniePersistConversation,
+            truncate_results: formData.genieTruncateResults,
           };
         }
-      } else if (formData.functionName === 'dao_ai.tools.create_vector_search_tool' ||
-                 formData.functionName === 'databricks_langchain.vector_search_retriever_tool.VectorSearchRetrieverTool') {
+      } else if (formData.functionName === 'dao_ai.tools.create_vector_search_tool') {
         // Vector search tool uses a retriever reference
         if (formData.retrieverSource === 'configured' && formData.retrieverRefName) {
           parsedArgs = {
             name: formData.name,
-            description: `Search using vector embeddings`,
+            ...(formData.vectorSearchDescription && { description: formData.vectorSearchDescription }),
             retriever: `__REF__${formData.retrieverRefName}`,
           };
         } else {
           // Direct selection - use specific fields (index name from endpoint)
           parsedArgs = {
             name: formData.name,
-            description: `Search using vector embeddings`,
+            ...(formData.vectorSearchDescription && { description: formData.vectorSearchDescription }),
             index_name: formData.vectorIndex,
           };
         }
+      } else if (formData.functionName === 'dao_ai.tools.create_send_slack_message_tool') {
+        // Slack message tool configuration
+        const slackArgs: Record<string, unknown> = {
+          name: formData.name,
+        };
+        
+        // Add connection reference
+        if (formData.slackConnectionSource === 'configured' && formData.slackConnectionRefName) {
+          slackArgs.connection = `__REF__${formData.slackConnectionRefName}`;
+        }
+        
+        // Add channel configuration - prefer channel_id if provided, otherwise use channel_name
+        if (formData.slackChannelId) {
+          slackArgs.channel_id = formData.slackChannelId;
+        } else if (formData.slackChannelName) {
+          slackArgs.channel_name = formData.slackChannelName;
+        }
+        
+        parsedArgs = slackArgs;
+      } else if (formData.functionName === 'dao_ai.tools.create_agent_endpoint_tool') {
+        // Agent endpoint tool configuration
+        const agentArgs: Record<string, unknown> = {
+          name: formData.name,
+        };
+        
+        // Add LLM reference
+        if (formData.agentLlmSource === 'configured' && formData.agentLlmRefName) {
+          agentArgs.llm = `__REF__${formData.agentLlmRefName}`;
+        }
+        
+        parsedArgs = agentArgs;
       } else {
         try {
           parsedArgs = JSON.parse(formData.args || '{}');
@@ -574,11 +707,31 @@ export default function ToolsSection() {
         ...(hitlConfig && { human_in_the_loop: hitlConfig }),
       };
     } else if (formData.type === 'unity_catalog') {
+      // Build partial_args if any are configured
+      let partialArgs: Record<string, string> | undefined;
+      if (formData.ucPartialArgs.length > 0) {
+        partialArgs = {};
+        for (const arg of formData.ucPartialArgs) {
+          if (arg.name && arg.value) {
+            if (arg.source === 'manual') {
+              partialArgs[arg.name] = arg.value;
+            } else {
+              // For variable or service_principal, use __REF__ marker
+              partialArgs[arg.name] = `__REF__${arg.value}`;
+            }
+          }
+        }
+        if (Object.keys(partialArgs).length === 0) {
+          partialArgs = undefined;
+        }
+      }
+
       // If using a configured function resource, use YAML merge reference
       if (formData.functionSource === 'configured' && formData.functionRefName) {
         functionConfig = {
           type: 'unity_catalog',
           __MERGE__: formData.functionRefName, // Will be converted to <<: *ref in YAML
+          ...(partialArgs && { partial_args: partialArgs }),
           ...(hitlConfig && { human_in_the_loop: hitlConfig }),
         };
       } else {
@@ -590,6 +743,7 @@ export default function ToolsSection() {
             schema_name: formData.ucSchema,
           },
           name: formData.ucFunction.split('.').pop() || formData.ucFunction, // Extract just the function name
+          ...(partialArgs && { partial_args: partialArgs }),
           ...(hitlConfig && { human_in_the_loop: hitlConfig }),
         };
       }
@@ -610,10 +764,27 @@ export default function ToolsSection() {
       functionConfig = funcName;
     }
 
-    addTool({
+    const toolConfig = {
       name: formData.name,
       function: functionConfig,
-    });
+    };
+
+    // Use refName as the YAML key (if provided), otherwise fall back to name
+    const refName = formData.refName.trim() || formData.name;
+
+    if (editingKey) {
+      // When editing, we need to handle the case where the reference name changed
+      if (editingKey !== refName) {
+        // Reference name changed - remove old and add new
+        removeTool(editingKey);
+        addTool(refName, toolConfig);
+      } else {
+        // Reference name unchanged - just update
+        updateTool(refName, toolConfig);
+      }
+    } else {
+      addTool(refName, toolConfig);
+    }
     
     resetForm();
     setIsModalOpen(false);
@@ -621,6 +792,7 @@ export default function ToolsSection() {
 
   const resetForm = () => {
     setFormData({
+      refName: '',
       name: '',
       type: 'factory',
       functionName: '',
@@ -629,6 +801,8 @@ export default function ToolsSection() {
       genieSource: 'configured',
       genieRefName: '',
       genieSpaceId: '',
+      geniePersistConversation: true,
+      genieTruncateResults: false,
       warehouseSource: 'configured',
       warehouseRefName: '',
       warehouseId: '',
@@ -643,6 +817,14 @@ export default function ToolsSection() {
       functionSource: 'configured',
       functionRefName: '',
       ucFunction: '',
+      slackConnectionSource: 'configured',
+      slackConnectionRefName: '',
+      slackChannelId: '',
+      slackChannelName: '',
+      agentLlmSource: 'configured',
+      agentLlmRefName: '',
+      vectorSearchDescription: '',
+      ucPartialArgs: [],
     });
     // Set MCP form defaults with proper source defaults based on configured resources
     const hasConfiguredConnections = Object.keys(configuredConnections).length > 0;
@@ -659,6 +841,292 @@ export default function ToolsSection() {
     });
     setHitlForm(defaultHITLFormData);
     setShowHitlConfig(false);
+    setNameManuallyEdited(false);
+    setRefNameManuallyEdited(false);
+    setEditingKey(null);
+  };
+
+  const { scrollToAsset } = useYamlScrollStore();
+
+  // Handle editing an existing tool
+  const handleEdit = (key: string, tool: { name: string; function: string | ToolFunctionModel }) => {
+    // Scroll to the asset in YAML preview
+    scrollToAsset(key);
+    
+    setEditingKey(key);
+    setNameManuallyEdited(true); // Preserve the name when editing
+    setRefNameManuallyEdited(true); // Preserve the reference name when editing
+    
+    const func = tool.function;
+    
+    if (typeof func === 'string') {
+      // Python function tool (string reference)
+      const isPythonTool = PYTHON_TOOLS.some(pt => pt.value === func);
+      const isFactoryTool = FACTORY_TOOLS.some(ft => ft.value === func);
+      
+      setFormData(prev => ({
+        ...prev,
+        refName: key, // YAML key (reference name)
+        name: tool.name,
+        type: isPythonTool ? 'python' : (isFactoryTool ? 'factory' : 'python'),
+        functionName: isPythonTool || isFactoryTool ? func : 'custom',
+        customFunctionName: isPythonTool || isFactoryTool ? '' : func,
+      }));
+    } else if (typeof func === 'object') {
+      const funcType = func.type || 'factory';
+      
+      // Handle HITL config
+      if (func.human_in_the_loop) {
+        const hitl = func.human_in_the_loop;
+        const interruptConfig = hitl.interrupt_config as Record<string, boolean> | undefined;
+        setShowHitlConfig(true);
+        setHitlForm({
+          enabled: true,
+          reviewPrompt: hitl.review_prompt || 'Please review the tool call',
+          allowAccept: interruptConfig?.allow_accept ?? true,
+          allowEdit: interruptConfig?.allow_edit ?? true,
+          allowRespond: interruptConfig?.allow_respond ?? true,
+          allowDecline: interruptConfig?.allow_decline ?? true,
+          declineMessage: hitl.decline_message || 'Tool call declined by user',
+          customActions: hitl.custom_actions 
+            ? Object.entries(hitl.custom_actions).map(([key, value]) => ({ key, value }))
+            : [],
+        });
+      }
+      
+      if (funcType === 'factory' && 'args' in func) {
+        const factoryFunc = func as { name?: string; args?: Record<string, unknown> };
+        const funcName = factoryFunc.name || '';
+        const isKnownFactory = FACTORY_TOOLS.some(ft => ft.value === funcName);
+        const args = factoryFunc.args || {};
+        
+        // Determine genie config from args
+        let genieSource: ResourceSource = 'configured';
+        let genieRefName = '';
+        let genieSpaceId = '';
+        if (args.genie_room) {
+          if (typeof args.genie_room === 'string' && args.genie_room.startsWith('__REF__')) {
+            genieRefName = args.genie_room.replace('__REF__', '');
+            genieSource = 'configured';
+          } else if (typeof args.genie_room === 'object' && args.genie_room !== null) {
+            const genieRoom = args.genie_room as { space_id?: string; name?: string };
+            // Try to find a matching configured genie room
+            const matchingKey = findConfiguredGenieRoom(genieRoom);
+            if (matchingKey) {
+              genieRefName = matchingKey;
+              genieSource = 'configured';
+            } else if (genieRoom.space_id) {
+              genieSpaceId = genieRoom.space_id;
+              genieSource = 'select';
+            }
+          }
+        }
+        
+        // Determine retriever config from args
+        let retrieverSource: ResourceSource = 'configured';
+        let retrieverRefName = '';
+        let vectorIndex = '';
+        if (args.retriever) {
+          if (typeof args.retriever === 'string' && args.retriever.startsWith('__REF__')) {
+            retrieverRefName = args.retriever.replace('__REF__', '');
+            retrieverSource = 'configured';
+          } else if (typeof args.retriever === 'object' && args.retriever !== null) {
+            // Try to find a matching configured retriever
+            const matchingKey = findConfiguredRetriever(args.retriever as { vector_store?: unknown });
+            if (matchingKey) {
+              retrieverRefName = matchingKey;
+              retrieverSource = 'configured';
+            } else {
+              retrieverSource = 'select';
+            }
+          }
+        }
+        if (args.index_name && !retrieverRefName) {
+          vectorIndex = args.index_name as string;
+          retrieverSource = 'select';
+        }
+        
+        // Slack tool config
+        let slackConnectionSource: ResourceSource = 'configured';
+        let slackConnectionRefName = '';
+        if (args.connection) {
+          if (typeof args.connection === 'string' && args.connection.startsWith('__REF__')) {
+            slackConnectionRefName = args.connection.replace('__REF__', '');
+            slackConnectionSource = 'configured';
+          } else if (typeof args.connection === 'object' && args.connection !== null) {
+            // Try to find a matching configured connection
+            const matchingKey = findConfiguredConnection(args.connection as { name?: string });
+            if (matchingKey) {
+              slackConnectionRefName = matchingKey;
+              slackConnectionSource = 'configured';
+            } else {
+              slackConnectionSource = 'select';
+            }
+          }
+        }
+        
+        // Agent endpoint LLM config
+        let agentLlmSource: ResourceSource = 'configured';
+        let agentLlmRefName = '';
+        if (args.llm) {
+          if (typeof args.llm === 'string' && args.llm.startsWith('__REF__')) {
+            agentLlmRefName = args.llm.replace('__REF__', '');
+            agentLlmSource = 'configured';
+          } else if (typeof args.llm === 'object' && args.llm !== null) {
+            // Try to find a matching configured LLM
+            const matchingKey = findConfiguredLlm(args.llm as { name?: string });
+            if (matchingKey) {
+              agentLlmRefName = matchingKey;
+              agentLlmSource = 'configured';
+            } else {
+              agentLlmSource = 'select';
+            }
+          }
+        }
+        
+        setFormData(prev => ({
+          ...prev,
+          refName: key, // YAML key (reference name)
+          name: tool.name,
+          type: 'factory',
+          functionName: isKnownFactory ? funcName : 'custom',
+          customFunctionName: isKnownFactory ? '' : funcName,
+          genieSource,
+          genieRefName,
+          genieSpaceId,
+          geniePersistConversation: args.persist_conversation as boolean ?? true,
+          genieTruncateResults: args.truncate_results as boolean ?? false,
+          retrieverSource,
+          retrieverRefName,
+          vectorIndex,
+          vectorSearchDescription: args.description as string || '',
+          slackConnectionSource,
+          slackConnectionRefName,
+          slackChannelId: args.channel_id as string || '',
+          slackChannelName: args.channel_name as string || '',
+          agentLlmSource,
+          agentLlmRefName,
+        }));
+      } else if (funcType === 'python') {
+        const funcName = func.name || '';
+        const isKnownPython = PYTHON_TOOLS.some(pt => pt.value === funcName);
+        
+        setFormData(prev => ({
+          ...prev,
+          refName: key, // YAML key (reference name)
+          name: tool.name,
+          type: 'python',
+          functionName: isKnownPython ? funcName : 'custom',
+          customFunctionName: isKnownPython ? '' : funcName,
+        }));
+      } else if (funcType === 'unity_catalog') {
+        // Cast to proper type for unity_catalog
+        const ucFunc = func as UnityCatalogFunctionModel & { __MERGE__?: string };
+        
+        // Determine if using a merge key or direct schema/name
+        const mergeKey = ucFunc.__MERGE__;
+        const partialArgs = ucFunc.partial_args || {};
+        
+        // Convert partial_args to PartialArgEntry array
+        const ucPartialArgs: PartialArgEntry[] = Object.entries(partialArgs).map(([argName, argValue]) => {
+          let source: PartialArgSource = 'manual';
+          let value = String(argValue);
+          
+          if (typeof argValue === 'string') {
+            if (argValue.startsWith('__REF__')) {
+              const refName = argValue.replace('__REF__', '');
+              // Check if it's a service principal or variable
+              const servicePrincipals = config.service_principals || {};
+              if (servicePrincipals[refName]) {
+                source = 'service_principal';
+                value = refName;
+              } else {
+                source = 'variable';
+                value = refName;
+              }
+            }
+          }
+          
+          return {
+            id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+            name: argName,
+            source,
+            value,
+          };
+        });
+        
+        if (mergeKey) {
+          setFormData(prev => ({
+            ...prev,
+            refName: key, // YAML key (reference name)
+            name: tool.name,
+            type: 'unity_catalog',
+            functionSource: 'configured',
+            functionRefName: mergeKey,
+            ucPartialArgs,
+          }));
+        } else {
+          // Direct schema/name - try to find a matching configured function first
+          const schema = ucFunc.schema;
+          const funcName = ucFunc.name || '';
+          
+          // Try to find a matching configured function
+          const matchingFuncKey = findConfiguredFunction({
+            name: funcName,
+            schema: schema as { catalog_name?: string; schema_name?: string } | undefined,
+          });
+          
+          if (matchingFuncKey) {
+            // Found a matching configured function
+            setFormData(prev => ({
+              ...prev,
+              refName: key, // YAML key (reference name)
+              name: tool.name,
+              type: 'unity_catalog',
+              functionSource: 'configured',
+              functionRefName: matchingFuncKey,
+              ucPartialArgs,
+            }));
+          } else {
+            // No match - use direct selection
+            let fullFuncName = funcName;
+            if (schema && typeof schema === 'object' && 'catalog_name' in schema && 'schema_name' in schema) {
+              fullFuncName = `${(schema as { catalog_name: string }).catalog_name}.${(schema as { schema_name: string }).schema_name}.${funcName}`;
+            }
+            
+            setFormData(prev => ({
+              ...prev,
+              refName: key, // YAML key (reference name)
+              name: tool.name,
+              type: 'unity_catalog',
+              functionSource: 'select',
+              ucFunction: fullFuncName,
+              ucPartialArgs,
+            }));
+          }
+        }
+      } else if (funcType === 'mcp') {
+        // MCP tool - this is complex, handle basic case
+        const mcpFunc = func as McpFunctionModel;
+        setFormData(prev => ({
+          ...prev,
+          refName: key, // YAML key (reference name)
+          name: tool.name,
+          type: 'mcp',
+        }));
+        // Set MCP form data
+        if (mcpFunc.url) {
+          setMcpForm(prev => ({
+            ...prev,
+            sourceType: 'url',
+            url: mcpFunc.url || '',
+          }));
+        }
+        // More MCP source types could be handled here
+      }
+    }
+    
+    setIsModalOpen(true);
   };
 
   const getToolType = (tool: { function: string | { type?: string } }): string => {
@@ -752,14 +1220,22 @@ export default function ToolsSection() {
           {Object.entries(tools).map(([key, tool]) => {
             const Icon = getToolIcon(tool);
             return (
-              <Card key={key} variant="interactive" className="group">
+              <Card 
+                key={key} 
+                variant="interactive" 
+                className="group cursor-pointer"
+                onClick={() => handleEdit(key, tool)}
+              >
                 <div className="flex items-center justify-between">
                   <div className="flex items-center space-x-4">
                     <div className="w-10 h-10 rounded-lg bg-amber-500/20 flex items-center justify-center">
                       <Icon className="w-5 h-5 text-amber-400" />
                     </div>
                     <div>
-                      <h3 className="font-medium text-white">{tool.name}</h3>
+                      <h3 className="font-medium text-white">{key}</h3>
+                      {key !== tool.name && (
+                        <p className="text-xs text-slate-500">name: {tool.name}</p>
+                      )}
                       <p className="text-sm text-slate-400 font-mono">
                         {typeof tool.function === 'object' ? tool.function.name : tool.function}
                       </p>
@@ -774,9 +1250,24 @@ export default function ToolsSection() {
                     )}
                     <Badge variant="warning">{getToolType(tool)}</Badge>
                     <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={(e: React.MouseEvent) => {
+                        e.stopPropagation();
+                        handleEdit(key, tool);
+                      }}
+                      title="Edit tool"
+                    >
+                      <Pencil className="w-4 h-4" />
+                    </Button>
+                    <Button
                       variant="danger"
                       size="sm"
-                      onClick={() => removeTool(key)}
+                      onClick={(e: React.MouseEvent) => {
+                        e.stopPropagation();
+                        safeDelete('Tool', key, () => removeTool(key));
+                      }}
+                      title="Delete tool"
                     >
                       <Trash2 className="w-4 h-4" />
                     </Button>
@@ -795,17 +1286,21 @@ export default function ToolsSection() {
           setIsModalOpen(false);
           resetForm();
         }}
-        title="Add Tool"
-        description="Configure a tool for your agents"
+        title={editingKey ? 'Edit Tool' : 'Add Tool'}
+        description={editingKey ? 'Modify the tool configuration' : 'Configure a tool for your agents'}
         size="lg"
       >
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <Input
-              label="Tool Name"
-              placeholder="e.g., genie_tool"
-              value={formData.name}
-              onChange={(e: ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, name: e.target.value })}
+              label="Reference Name"
+              placeholder="e.g., find_product_by_sku_tool"
+              value={formData.refName}
+              onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                setFormData({ ...formData, refName: normalizeRefNameWhileTyping(e.target.value) });
+                setRefNameManuallyEdited(true);
+              }}
+              hint="YAML key (spaces become underscores)"
               required
             />
             <Select
@@ -815,6 +1310,18 @@ export default function ToolsSection() {
               onChange={(e: ChangeEvent<HTMLSelectElement>) => setFormData({ ...formData, type: e.target.value as 'factory' | 'python' | 'unity_catalog' | 'mcp' })}
             />
           </div>
+          
+          <Input
+            label="Tool Name"
+            placeholder="e.g., find_product_by_sku_uc"
+            value={formData.name}
+            onChange={(e: ChangeEvent<HTMLInputElement>) => {
+              setFormData({ ...formData, name: e.target.value });
+              setNameManuallyEdited(true);
+            }}
+            hint="The name property inside the tool config (can differ from reference name)"
+            required
+          />
 
           {/* Factory Tool Configuration */}
           {formData.type === 'factory' && (
@@ -829,12 +1336,17 @@ export default function ToolsSection() {
                       <button
                         key={tool.value}
                         type="button"
-                        onClick={() => setFormData({ 
-                          ...formData, 
-                          functionName: tool.value,
-                          // Auto-generate tool name if not already set
-                          name: formData.name || generateToolName(tool.value),
-                        })}
+                        onClick={() => {
+                          const generatedName = generateToolName(tool.value);
+                          setFormData({ 
+                            ...formData, 
+                            functionName: tool.value,
+                            // Auto-generate tool name if not manually edited
+                            name: nameManuallyEdited ? formData.name : generatedName,
+                            // Auto-generate ref name if not manually edited
+                            refName: refNameManuallyEdited ? formData.refName : generatedName,
+                          });
+                        }}
                         className={`p-3 rounded-lg border text-left transition-all ${
                           isSelected
                             ? 'border-blue-500 bg-blue-500/10'
@@ -873,12 +1385,42 @@ export default function ToolsSection() {
                       required
                     />
                   </ResourceSelector>
+                  
+                  {/* Genie Tool Options */}
+                  <div className="space-y-3 pt-2 border-t border-slate-700">
+                    <h5 className="text-xs font-medium text-slate-400 uppercase tracking-wider">Options</h5>
+                    
+                    <label className="flex items-start gap-3 cursor-pointer group">
+                      <input
+                        type="checkbox"
+                        checked={formData.geniePersistConversation}
+                        onChange={(e) => setFormData({ ...formData, geniePersistConversation: e.target.checked })}
+                        className="mt-0.5 w-4 h-4 rounded border-slate-600 bg-slate-800 text-violet-500 focus:ring-violet-500 focus:ring-offset-slate-900"
+                      />
+                      <div>
+                        <span className="text-sm text-slate-200 group-hover:text-white">Persist Conversation</span>
+                        <p className="text-xs text-slate-500">Keep conversation context across tool calls for multi-turn conversations within the same Genie space</p>
+                      </div>
+                    </label>
+                    
+                    <label className="flex items-start gap-3 cursor-pointer group">
+                      <input
+                        type="checkbox"
+                        checked={formData.genieTruncateResults}
+                        onChange={(e) => setFormData({ ...formData, genieTruncateResults: e.target.checked })}
+                        className="mt-0.5 w-4 h-4 rounded border-slate-600 bg-slate-800 text-violet-500 focus:ring-violet-500 focus:ring-offset-slate-900"
+                      />
+                      <div>
+                        <span className="text-sm text-slate-200 group-hover:text-white">Truncate Results</span>
+                        <p className="text-xs text-slate-500">Truncate large query results to fit within token limits</p>
+                      </div>
+                    </label>
+                  </div>
                 </div>
               )}
 
               {/* Vector Search Tool Configuration */}
-              {(formData.functionName === 'dao_ai.tools.create_vector_search_tool' ||
-                formData.functionName === 'databricks_langchain.vector_search_retriever_tool.VectorSearchRetrieverTool') && (
+              {formData.functionName === 'dao_ai.tools.create_vector_search_tool' && (
                 <div className="space-y-4 p-4 bg-slate-800/50 rounded-lg border border-slate-700">
                   <h4 className="text-sm font-medium text-slate-300">Vector Search Configuration</h4>
                   <ResourceSelector
@@ -928,6 +1470,82 @@ export default function ToolsSection() {
                       </div>
                     </div>
                   </ResourceSelector>
+                  
+                  {/* Vector Search Options */}
+                  <div className="pt-2 border-t border-slate-700">
+                    <Input
+                      label="Description"
+                      placeholder="e.g., Search product documentation for answers"
+                      value={formData.vectorSearchDescription}
+                      onChange={(e: ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, vectorSearchDescription: e.target.value })}
+                      hint="Optional description for the tool (defaults to generic description)"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Slack Message Tool Configuration */}
+              {formData.functionName === 'dao_ai.tools.create_send_slack_message_tool' && (
+                <div className="space-y-4 p-4 bg-slate-800/50 rounded-lg border border-slate-700">
+                  <h4 className="text-sm font-medium text-slate-300">Slack Message Tool Configuration</h4>
+                  
+                  <ResourceSelector
+                    label="Slack Connection"
+                    resourceType="Connection"
+                    configuredOptions={configuredConnectionOptions}
+                    configuredValue={formData.slackConnectionRefName}
+                    onConfiguredChange={(value) => setFormData({ ...formData, slackConnectionRefName: value })}
+                    source={formData.slackConnectionSource}
+                    onSourceChange={(source) => setFormData({ ...formData, slackConnectionSource: source })}
+                    hint="Unity Catalog connection to Slack"
+                  >
+                    <p className="text-sm text-slate-400">
+                      Select a configured connection or create one in the Resources section
+                    </p>
+                  </ResourceSelector>
+                  
+                  <div className="space-y-3 pt-2 border-t border-slate-700">
+                    <h5 className="text-xs font-medium text-slate-400 uppercase tracking-wider">Channel Configuration</h5>
+                    <p className="text-xs text-slate-500">Provide either a Channel ID or Channel Name. Channel ID is preferred if known.</p>
+                    
+                    <Input
+                      label="Channel ID"
+                      placeholder="e.g., C1234567890"
+                      value={formData.slackChannelId}
+                      onChange={(e: ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, slackChannelId: e.target.value })}
+                      hint="Slack channel ID (e.g., C1234567890). Takes precedence over channel name."
+                    />
+                    
+                    <Input
+                      label="Channel Name"
+                      placeholder="e.g., general or #general"
+                      value={formData.slackChannelName}
+                      onChange={(e: ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, slackChannelName: e.target.value })}
+                      hint="Slack channel name. Used to lookup channel ID if not provided above."
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Agent Endpoint Tool Configuration */}
+              {formData.functionName === 'dao_ai.tools.create_agent_endpoint_tool' && (
+                <div className="space-y-4 p-4 bg-slate-800/50 rounded-lg border border-slate-700">
+                  <h4 className="text-sm font-medium text-slate-300">Agent Endpoint Tool Configuration</h4>
+                  
+                  <ResourceSelector
+                    label="LLM / Agent Endpoint"
+                    resourceType="LLM"
+                    configuredOptions={configuredLlmOptions}
+                    configuredValue={formData.agentLlmRefName}
+                    onConfiguredChange={(value) => setFormData({ ...formData, agentLlmRefName: value })}
+                    source={formData.agentLlmSource}
+                    onSourceChange={(source) => setFormData({ ...formData, agentLlmSource: source })}
+                    hint="Select the LLM or agent endpoint to call"
+                  >
+                    <p className="text-sm text-slate-400">
+                      Configure an LLM in the Resources section, then select it here
+                    </p>
+                  </ResourceSelector>
                 </div>
               )}
 
@@ -942,11 +1560,8 @@ export default function ToolsSection() {
                 />
               )}
 
-              {/* JSON args for custom or tools that need it */}
-              {(formData.functionName === 'custom' || 
-                formData.functionName === 'dao_ai.tools.search_tool' ||
-                formData.functionName === 'dao_ai.tools.create_send_slack_message_tool' ||
-                formData.functionName === 'dao_ai.tools.create_agent_endpoint_tool') && (
+              {/* JSON args for custom factory tools only */}
+              {formData.functionName === 'custom' && (
                 <Textarea
                   label="Arguments (JSON)"
                   placeholder='{"key": "value"}'
@@ -961,22 +1576,76 @@ export default function ToolsSection() {
 
           {/* Python Function */}
           {formData.type === 'python' && (
-            <Input
-              label="Python Function Path"
-              placeholder="e.g., my_package.tools.my_function"
-              value={formData.functionName}
-              onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                const funcName = e.target.value;
-                setFormData({ 
-                  ...formData, 
-                  functionName: funcName,
-                  // Auto-generate tool name if not already set
-                  name: formData.name || generateToolName(funcName),
-                });
-              }}
-              hint="Fully qualified Python function path"
-              required
-            />
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <label className="block text-sm font-medium text-slate-300">Python Tool Function</label>
+                <p className="text-xs text-slate-500">
+                  Python functions decorated with @tool that can be used directly as tools
+                </p>
+                <div className="grid grid-cols-2 gap-2">
+                  {PYTHON_TOOLS.map((tool) => {
+                    const Icon = tool.icon;
+                    const isSelected = formData.functionName === tool.value;
+                    return (
+                      <button
+                        key={tool.value}
+                        type="button"
+                        onClick={() => {
+                          const generatedName = tool.value !== 'custom' ? generateToolName(tool.value) : '';
+                          setFormData({ 
+                            ...formData, 
+                            functionName: tool.value,
+                            customFunctionName: '',
+                            // Auto-generate tool name if not manually edited
+                            name: nameManuallyEdited ? formData.name : generatedName,
+                            // Auto-generate ref name if not manually edited
+                            refName: refNameManuallyEdited ? formData.refName : generatedName,
+                          });
+                        }}
+                        className={`p-3 rounded-lg border text-left transition-all ${
+                          isSelected
+                            ? 'border-violet-500 bg-violet-500/10'
+                            : 'border-slate-700 bg-slate-800/50 hover:border-slate-600'
+                        }`}
+                      >
+                        <div className="flex items-start space-x-2">
+                          <Icon className={`w-4 h-4 mt-0.5 ${isSelected ? 'text-violet-400' : 'text-slate-400'}`} />
+                          <div>
+                            <div className={`text-sm font-medium ${isSelected ? 'text-violet-400' : 'text-slate-300'}`}>
+                              {tool.label}
+                            </div>
+                            <div className="text-xs text-slate-500">{tool.description}</div>
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Custom Python Function Path */}
+              {formData.functionName === 'custom' && (
+                <Input
+                  label="Custom Python Function Path"
+                  placeholder="e.g., my_package.tools.my_function"
+                  value={formData.customFunctionName}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                    const funcName = e.target.value;
+                    const generatedName = generateToolName(funcName);
+                    setFormData({ 
+                      ...formData, 
+                      customFunctionName: funcName,
+                      // Auto-generate tool name if not manually edited
+                      name: nameManuallyEdited ? formData.name : generatedName,
+                      // Auto-generate ref name if not manually edited
+                      refName: refNameManuallyEdited ? formData.refName : generatedName,
+                    });
+                  }}
+                  hint="Fully qualified path to a Python function decorated with @tool"
+                  required
+                />
+              )}
+            </div>
           )}
 
           {/* Unity Catalog Function */}
@@ -1027,14 +1696,17 @@ export default function ToolsSection() {
                     onChange={(e: ChangeEvent<HTMLSelectElement>) => {
                       const value = e.target.value;
                       const func = configuredFunctions[value];
+                      const generatedName = generateToolName(func?.name || value);
                       setFormData({ 
                         ...formData, 
                         functionRefName: value, 
                         ucFunction: '',
                         ucCatalog: '',
                         ucSchema: '',
-                        // Auto-generate tool name if not already set
-                        name: formData.name || generateToolName(func?.name || value),
+                        // Auto-generate tool name if not manually edited
+                        name: nameManuallyEdited ? formData.name : generatedName,
+                        // Auto-generate ref name if not manually edited
+                        refName: refNameManuallyEdited ? formData.refName : generatedName,
                       });
                     }}
                   />
@@ -1109,12 +1781,15 @@ export default function ToolsSection() {
                       value={formData.ucFunction}
                       onChange={(e: ChangeEvent<HTMLSelectElement>) => {
                         const funcFullName = e.target.value;
+                        const generatedName = generateToolName(funcFullName);
                         setFormData({ 
                           ...formData, 
                           ucFunction: funcFullName, 
                           functionRefName: '',
-                          // Auto-generate tool name if not already set
-                          name: formData.name || generateToolName(funcFullName),
+                          // Auto-generate tool name if not manually edited
+                          name: nameManuallyEdited ? formData.name : generatedName,
+                          // Auto-generate ref name if not manually edited
+                          refName: refNameManuallyEdited ? formData.refName : generatedName,
                         });
                       }}
                       disabled={(!formData.ucCatalog || !formData.ucSchema) && !formData.schemaRefName || ucFunctionsLoading}
@@ -1129,6 +1804,147 @@ export default function ToolsSection() {
                   </div>
                 </div>
               )}
+
+              {/* Partial Arguments Section */}
+              <div className="space-y-3 pt-3 border-t border-slate-700">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h5 className="text-sm font-medium text-slate-300">Partial Arguments</h5>
+                    <p className="text-xs text-slate-500">Pre-fill function parameters with static values or variable references</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setFormData({
+                      ...formData,
+                      ucPartialArgs: [...formData.ucPartialArgs, { id: `arg_${Date.now()}`, name: '', source: 'manual', value: '' }]
+                    })}
+                    className="flex items-center space-x-1 text-xs text-violet-400 hover:text-violet-300 transition-colors"
+                  >
+                    <Plus className="w-3 h-3" />
+                    <span>Add Argument</span>
+                  </button>
+                </div>
+
+                {formData.ucPartialArgs.length === 0 ? (
+                  <p className="text-xs text-slate-500 italic">No partial arguments configured. Click "Add Argument" to pre-fill function parameters.</p>
+                ) : (
+                  <div className="space-y-3">
+                    {formData.ucPartialArgs.map((arg, index) => (
+                      <div key={arg.id} className="p-3 bg-slate-900/50 rounded-lg border border-slate-600 space-y-2">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex-1 grid grid-cols-2 gap-3">
+                            <Input
+                              label="Parameter Name"
+                              value={arg.name}
+                              onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                                const newArgs = [...formData.ucPartialArgs];
+                                newArgs[index] = { ...arg, name: e.target.value };
+                                setFormData({ ...formData, ucPartialArgs: newArgs });
+                              }}
+                              placeholder="e.g., host, client_id"
+                            />
+                            <div className="space-y-1.5">
+                              <div className="flex items-center justify-between">
+                                <label className="block text-sm font-medium text-slate-300">Value Source</label>
+                                <div className="inline-flex rounded-lg bg-slate-800 p-0.5 text-xs">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const newArgs = [...formData.ucPartialArgs];
+                                      newArgs[index] = { ...arg, source: 'manual', value: '' };
+                                      setFormData({ ...formData, ucPartialArgs: newArgs });
+                                    }}
+                                    className={`px-2 py-1 rounded font-medium transition-all ${
+                                      arg.source === 'manual'
+                                        ? 'bg-violet-500/20 text-violet-400'
+                                        : 'text-slate-400 hover:text-slate-300'
+                                    }`}
+                                  >
+                                    Manual
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const newArgs = [...formData.ucPartialArgs];
+                                      newArgs[index] = { ...arg, source: 'variable', value: '' };
+                                      setFormData({ ...formData, ucPartialArgs: newArgs });
+                                    }}
+                                    className={`px-2 py-1 rounded font-medium transition-all ${
+                                      arg.source === 'variable'
+                                        ? 'bg-violet-500/20 text-violet-400'
+                                        : 'text-slate-400 hover:text-slate-300'
+                                    }`}
+                                  >
+                                    Variable
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const newArgs = [...formData.ucPartialArgs];
+                                      newArgs[index] = { ...arg, source: 'service_principal', value: '' };
+                                      setFormData({ ...formData, ucPartialArgs: newArgs });
+                                    }}
+                                    className={`px-2 py-1 rounded font-medium transition-all ${
+                                      arg.source === 'service_principal'
+                                        ? 'bg-violet-500/20 text-violet-400'
+                                        : 'text-slate-400 hover:text-slate-300'
+                                    }`}
+                                  >
+                                    SP
+                                  </button>
+                                </div>
+                              </div>
+                              {arg.source === 'manual' && (
+                                <Input
+                                  value={arg.value}
+                                  onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                                    const newArgs = [...formData.ucPartialArgs];
+                                    newArgs[index] = { ...arg, value: e.target.value };
+                                    setFormData({ ...formData, ucPartialArgs: newArgs });
+                                  }}
+                                  placeholder="Enter value..."
+                                />
+                              )}
+                              {arg.source === 'variable' && (
+                                <Select
+                                  value={arg.value}
+                                  onChange={(e: ChangeEvent<HTMLSelectElement>) => {
+                                    const newArgs = [...formData.ucPartialArgs];
+                                    newArgs[index] = { ...arg, value: e.target.value };
+                                    setFormData({ ...formData, ucPartialArgs: newArgs });
+                                  }}
+                                  options={variableOptions}
+                                />
+                              )}
+                              {arg.source === 'service_principal' && (
+                                <Select
+                                  value={arg.value}
+                                  onChange={(e: ChangeEvent<HTMLSelectElement>) => {
+                                    const newArgs = [...formData.ucPartialArgs];
+                                    newArgs[index] = { ...arg, value: e.target.value };
+                                    setFormData({ ...formData, ucPartialArgs: newArgs });
+                                  }}
+                                  options={servicePrincipalOptions}
+                                />
+                              )}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const newArgs = formData.ucPartialArgs.filter(a => a.id !== arg.id);
+                              setFormData({ ...formData, ucPartialArgs: newArgs });
+                            }}
+                            className="mt-6 p-1 text-slate-400 hover:text-red-400 transition-colors"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
@@ -1766,7 +2582,7 @@ export default function ToolsSection() {
                     (mcpForm.connectionSource === 'select' && mcpForm.connectionName)))
               }
             >
-              Add Tool
+              {editingKey ? 'Save Changes' : 'Add Tool'}
             </Button>
           </div>
         </form>

@@ -1,6 +1,6 @@
 import yaml from 'js-yaml';
-import { AppConfig, VariableModel, CompositeVariableModel, EnvironmentVariableModel, SecretVariableModel, PrimitiveVariableModel, DatabaseModel, OrchestrationModel, ToolFunctionModel, HumanInTheLoopModel } from '@/types/dao-ai-types';
-import { getYamlReferences, getOriginalAnchorName } from './yaml-references';
+import { AppConfig, VariableModel, DatabaseModel, OrchestrationModel, ToolFunctionModel, HumanInTheLoopModel } from '@/types/dao-ai-types';
+import { getYamlReferences, getOriginalAnchorName, shouldUseMergeKey, getRequiredMergeAnchors } from './yaml-references';
 
 /**
  * Safely check if a value is a string that starts with a prefix.
@@ -166,13 +166,21 @@ function addYamlAnchors(yamlString: string): string {
           const fullPath = `${pathPrefix}.${keyName}`;
           const originalAnchor = getOriginalAnchorName(fullPath);
           
+          // Get anchors that are REQUIRED by merge keys (<<: *anchor)
+          // These must be present even for normally skipped sections
+          const requiredMergeAnchors = getRequiredMergeAnchors();
+          const isRequiredByMerge = requiredMergeAnchors.includes(keyName);
+          
           // Resource sections that rarely need anchors (they're source data, not references)
-          // Only add anchor if it was in the original YAML
+          // Only add anchor if it was in the original YAML OR required by a merge key
           const noAutoAnchorSections = ['tables', 'volumes', 'functions'];
           
           if (originalAnchor) {
             // Preserve the original anchor from imported YAML
             lines[i] = `${indent}${keyName}: &${originalAnchor}`;
+          } else if (isRequiredByMerge) {
+            // This anchor is required by a merge key - MUST add it
+            lines[i] = `${indent}${keyName}: &${keyName}`;
           } else if (noAutoAnchorSections.includes(section.name)) {
             // Don't auto-add anchors to tables/volumes/functions - they're rarely referenced
             // Leave the line as-is (no anchor)
@@ -214,6 +222,24 @@ function convertReferencesToAliases(yamlString: string): string {
  */
 function createReference(refName: string): string {
   return `__REF__${refName}`;
+}
+
+/**
+ * Format environment variables for YAML output.
+ * Converts variable references (values starting with *) to __REF__ markers
+ * so they get properly converted to unquoted YAML aliases.
+ */
+function formatEnvironmentVars(envVars: Record<string, any>): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(envVars)) {
+    if (typeof value === 'string' && value.startsWith('*')) {
+      // This is a variable reference - use __REF__ marker so it becomes an unquoted alias
+      result[key] = createReference(value.slice(1));
+    } else {
+      result[key] = String(value);
+    }
+  }
+  return result;
 }
 
 /**
@@ -386,8 +412,12 @@ export function processObjectWithReferences(
 /**
  * Format a model reference - either as a YAML alias if it matches a defined LLM,
  * or as an inline object if it's a custom definition.
+ * 
+ * @param model - The model object or string
+ * @param definedLLMs - Map of defined LLM keys to LLM objects
+ * @param basePath - The path in the YAML structure (e.g., "agents.my_agent.model") for reference lookup
  */
-function formatModelReference(model: any, definedLLMs: Record<string, any>): any {
+function formatModelReference(model: any, definedLLMs: Record<string, any>, basePath?: string): any {
   if (typeof model === 'string') {
     // If it's a string, check if it's a defined LLM reference
     if (definedLLMs[model]) {
@@ -397,9 +427,23 @@ function formatModelReference(model: any, definedLLMs: Record<string, any>): any
   }
   
   if (model && typeof model === 'object' && model.name) {
-    // Check if this model matches a defined LLM by checking if any LLM key's model name matches
+    // FIRST: Check if we have an original reference for this path
+    // This is critical to preserve the correct reference when multiple LLMs have the same name
+    if (basePath) {
+      const originalRef = findOriginalReference(basePath, model);
+      if (originalRef) {
+        // Only use this reference if the key still exists in definedLLMs
+        // If it doesn't exist, the reference will cause an "undefined alias" error
+        // which is the desired behavior for dependency checking
+        return createReference(originalRef);
+      }
+    }
+    
+    // FALLBACK: Check if this model exactly matches a defined LLM (deep equality)
+    // This is safer than just matching by name
     for (const [llmKey, llm] of Object.entries(definedLLMs)) {
-      if ((llm as any).name === model.name) {
+      // Deep equality check to avoid false matches
+      if (JSON.stringify(llm) === JSON.stringify(model)) {
         return createReference(llmKey);
       }
     }
@@ -544,7 +588,7 @@ function formatOrchestration(orchestration: OrchestrationModel, definedLLMs: Rec
     }
     
     result.supervisor = {
-      model: formatModelReference(orchestration.supervisor.model, definedLLMs),
+      model: formatModelReference(orchestration.supervisor.model, definedLLMs, 'orchestration.supervisor.model'),
       ...(supervisorToolsValue && supervisorToolsValue.length > 0 && { 
         tools: supervisorToolsValue 
       }),
@@ -554,7 +598,7 @@ function formatOrchestration(orchestration: OrchestrationModel, definedLLMs: Rec
   
   if (orchestration.swarm) {
     result.swarm = {
-      model: formatModelReference(orchestration.swarm.model, definedLLMs),
+      model: formatModelReference(orchestration.swarm.model, definedLLMs, 'orchestration.swarm.model'),
     };
     
     // Handle default_agent - can be string or AgentModel
@@ -650,9 +694,20 @@ function formatToolFunction(func: ToolFunctionModel, toolKey?: string): any {
   }
 
   if (func.type === 'unity_catalog') {
+    // Check if this function should use a merge key (<<: *anchor_name)
+    const functionPath = toolKey ? `tools.${toolKey}.function` : 'function';
+    const mergeAnchor = shouldUseMergeKey(functionPath);
+    
     // If using YAML merge reference (<<: *func_ref)
-    if ('__MERGE__' in func && (func as any).__MERGE__) {
+    if (mergeAnchor) {
+      // Use the original merge key
+      result.__MERGE__ = mergeAnchor;
+      // Remove name since it comes from the merged reference
+      delete result.name;
+    } else if ('__MERGE__' in func && (func as any).__MERGE__) {
       result.__MERGE__ = (func as any).__MERGE__;
+      // Remove name since it comes from the merged reference
+      delete result.name;
     } else if ('schema' in func && func.schema) {
       // Inline schema and name
       result.schema = func.schema;
@@ -755,7 +810,7 @@ function formatToolFunction(func: ToolFunctionModel, toolKey?: string): any {
  * Format a DatabaseModel for YAML output.
  * This creates a properly structured database configuration.
  */
-function formatDatabaseRef(database: DatabaseModel): any {
+function formatDatabaseRef(database: DatabaseModel, basePath?: string): any {
   const db: any = {
     name: database.name,
   };
@@ -776,24 +831,59 @@ function formatDatabaseRef(database: DatabaseModel): any {
         db.service_principal = createReference(database.service_principal);
       }
       } else {
-        // It's an inline ServicePrincipalModel object
-        db.service_principal = {
-          client_id: formatCredential(database.service_principal.client_id),
-          client_secret: formatCredential(database.service_principal.client_secret),
-        };
+        // Check if service_principal was originally a reference
+        const spPath = basePath ? `${basePath}.service_principal` : 'service_principal';
+        const spRef = findOriginalReference(spPath, database.service_principal);
+        if (spRef) {
+          db.service_principal = createReference(spRef);
+        } else {
+          // It's an inline ServicePrincipalModel object
+          db.service_principal = {
+            client_id: formatCredentialWithPath(database.service_principal.client_id, basePath ? `${basePath}.service_principal.client_id` : undefined),
+            client_secret: formatCredentialWithPath(database.service_principal.client_secret, basePath ? `${basePath}.service_principal.client_secret` : undefined),
+          };
+        }
       }
   } else {
     // OAuth credentials (only if no service_principal)
-    if (database.client_id) db.client_id = formatCredential(database.client_id);
-    if (database.client_secret) db.client_secret = formatCredential(database.client_secret);
-    if (database.workspace_host) db.workspace_host = formatCredential(database.workspace_host);
+    // Check if these were originally references to variables
+    if (database.client_id) {
+      db.client_id = formatCredentialWithPath(database.client_id, basePath ? `${basePath}.client_id` : undefined);
+    }
+    if (database.client_secret) {
+      db.client_secret = formatCredentialWithPath(database.client_secret, basePath ? `${basePath}.client_secret` : undefined);
+    }
+    if (database.workspace_host) {
+      db.workspace_host = formatCredentialWithPath(database.workspace_host, basePath ? `${basePath}.workspace_host` : undefined);
+    }
   }
   
   // User credentials
-  if (database.user) db.user = formatCredential(database.user);
-  if (database.password) db.password = formatCredential(database.password);
+  if (database.user) {
+    db.user = formatCredentialWithPath(database.user, basePath ? `${basePath}.user` : undefined);
+  }
+  if (database.password) {
+    db.password = formatCredentialWithPath(database.password, basePath ? `${basePath}.password` : undefined);
+  }
   
   return db;
+}
+
+/**
+ * Format a credential with path context for reference lookup.
+ * Checks if the value was originally a YAML reference before formatting.
+ */
+function formatCredentialWithPath(value: unknown, path?: string): any {
+  // First check if this was originally a reference
+  if (path) {
+    const ref = findOriginalReference(path, value);
+    if (ref) {
+      return createReference(ref);
+    }
+  }
+  
+  // Fall back to regular credential formatting
+  return formatCredential(value);
 }
 
 /**
@@ -826,31 +916,59 @@ function formatCredential(value: unknown): any {
 }
 
 /**
+ * Infer the type of a variable from its structure.
+ * YAML imports may not have explicit 'type' field.
+ */
+function inferVariableType(variable: any): 'primitive' | 'env' | 'secret' | 'composite' {
+  // First check for explicit type field
+  if (variable.type) {
+    return variable.type;
+  }
+  
+  // Infer from structure
+  if ('options' in variable && Array.isArray(variable.options)) {
+    return 'composite';
+  }
+  if ('scope' in variable && 'secret' in variable) {
+    return 'secret';
+  }
+  if ('env' in variable) {
+    return 'env';
+  }
+  if ('value' in variable) {
+    return 'primitive';
+  }
+  
+  return 'primitive';
+}
+
+/**
  * Convert internal VariableModel to YAML-compatible format.
  * Removes the 'type' field and formats according to dao-ai schema.
  */
 function formatVariable(variable: VariableModel): any {
-  switch (variable.type) {
+  const varType = inferVariableType(variable);
+  const varObj = variable as Record<string, any>;
+  
+  switch (varType) {
     case 'primitive':
-      return { value: (variable as PrimitiveVariableModel).value };
+      return { value: varObj.value };
     case 'env':
-      const envVar = variable as EnvironmentVariableModel;
       return {
-        env: envVar.env,
-        ...(envVar.default_value !== undefined && { default_value: envVar.default_value }),
+        env: varObj.env,
+        ...(varObj.default_value !== undefined && { default_value: varObj.default_value }),
       };
     case 'secret':
-      const secretVar = variable as SecretVariableModel;
       return {
-        scope: secretVar.scope,
-        secret: secretVar.secret,
-        ...(secretVar.default_value !== undefined && { default_value: secretVar.default_value }),
+        scope: varObj.scope,
+        secret: varObj.secret,
+        ...(varObj.default_value !== undefined && { default_value: varObj.default_value }),
       };
     case 'composite':
-      const compVar = variable as CompositeVariableModel;
+      const options = (varObj.options || []) as any[];
       return {
-        options: compVar.options.map((opt) => formatVariable(opt)),
-        ...(compVar.default_value !== undefined && { default_value: compVar.default_value }),
+        options: options.map((opt) => formatVariable(opt as VariableModel)),
+        ...(varObj.default_value !== undefined && { default_value: varObj.default_value }),
       };
     default:
       return variable;
@@ -1085,7 +1203,7 @@ export function generateYAML(config: AppConfig): string {
     if (config.resources!.databases && Object.keys(config.resources!.databases).length > 0) {
       yamlConfig.resources.databases = {};
       Object.entries(config.resources!.databases).forEach(([key, database]) => {
-        yamlConfig.resources.databases[key] = formatDatabaseRef(database);
+        yamlConfig.resources.databases[key] = formatDatabaseRef(database, `resources.databases.${key}`);
       });
     }
   }
@@ -1168,7 +1286,7 @@ export function generateYAML(config: AppConfig): string {
     Object.entries(config.guardrails).forEach(([key, guardrail]) => {
       yamlConfig.guardrails[key] = {
         name: guardrail.name,
-        model: formatModelReference(guardrail.model, definedLLMs),
+        model: formatModelReference(guardrail.model, definedLLMs, `guardrails.${key}.model`),
         prompt: guardrail.prompt,
         ...(guardrail.num_retries !== undefined && { num_retries: guardrail.num_retries }),
       };
@@ -1180,20 +1298,80 @@ export function generateYAML(config: AppConfig): string {
     yamlConfig.memory = {};
     
     if (config.memory.checkpointer) {
+      // Check if database was originally a reference
+      let checkpointerDatabase: any = undefined;
+      if (config.memory.checkpointer.database) {
+        const dbRef = findOriginalReference('memory.checkpointer.database', config.memory.checkpointer.database);
+        if (dbRef) {
+          checkpointerDatabase = createReference(dbRef);
+        } else {
+          // Also check if it matches a defined database by instance_name
+          const definedDatabases = config.resources?.databases || {};
+          const matchingDbKey = Object.entries(definedDatabases).find(
+            ([, db]) => (db as DatabaseModel).instance_name === config.memory?.checkpointer?.database?.instance_name
+          )?.[0];
+          if (matchingDbKey) {
+            checkpointerDatabase = createReference(matchingDbKey);
+          } else {
+            checkpointerDatabase = formatDatabaseRef(config.memory.checkpointer.database, 'memory.checkpointer.database');
+          }
+        }
+      }
+      
       yamlConfig.memory.checkpointer = {
         name: config.memory.checkpointer.name,
         type: config.memory.checkpointer.type || 'memory',
-        ...(config.memory.checkpointer.database && { database: formatDatabaseRef(config.memory.checkpointer.database) }),
+        ...(checkpointerDatabase && { database: checkpointerDatabase }),
       };
     }
     
     if (config.memory.store) {
+      // Check if database was originally a reference
+      let storeDatabase: any = undefined;
+      if (config.memory.store.database) {
+        const dbRef = findOriginalReference('memory.store.database', config.memory.store.database);
+        if (dbRef) {
+          storeDatabase = createReference(dbRef);
+        } else {
+          // Also check if it matches a defined database by instance_name
+          const definedDatabases = config.resources?.databases || {};
+          const matchingDbKey = Object.entries(definedDatabases).find(
+            ([, db]) => (db as DatabaseModel).instance_name === config.memory?.store?.database?.instance_name
+          )?.[0];
+          if (matchingDbKey) {
+            storeDatabase = createReference(matchingDbKey);
+          } else {
+            storeDatabase = formatDatabaseRef(config.memory.store.database, 'memory.store.database');
+          }
+        }
+      }
+      
+      // Check if embedding_model was originally a reference
+      let storeEmbeddingModel: any = undefined;
+      if (config.memory.store.embedding_model) {
+        const emRef = findOriginalReference('memory.store.embedding_model', config.memory.store.embedding_model);
+        if (emRef) {
+          storeEmbeddingModel = createReference(emRef);
+        } else {
+          // Also check if it matches a defined LLM by name
+          const definedLLMs = config.resources?.llms || {};
+          const matchingLlmKey = Object.entries(definedLLMs).find(
+            ([, llm]) => (llm as any).name === (config.memory?.store?.embedding_model as any)?.name
+          )?.[0];
+          if (matchingLlmKey) {
+            storeEmbeddingModel = createReference(matchingLlmKey);
+          } else {
+            storeEmbeddingModel = config.memory.store.embedding_model;
+          }
+        }
+      }
+      
       yamlConfig.memory.store = {
         name: config.memory.store.name,
         type: config.memory.store.type || 'memory',
-        ...(config.memory.store.embedding_model && { embedding_model: config.memory.store.embedding_model }),
+        ...(storeEmbeddingModel && { embedding_model: storeEmbeddingModel }),
         ...(config.memory.store.dims && { dims: config.memory.store.dims }),
-        ...(config.memory.store.database && { database: formatDatabaseRef(config.memory.store.database) }),
+        ...(storeDatabase && { database: storeDatabase }),
         ...(config.memory.store.namespace && { namespace: config.memory.store.namespace }),
       };
     }
@@ -1203,13 +1381,17 @@ export function generateYAML(config: AppConfig): string {
   if (config.prompts && Object.keys(config.prompts).length > 0) {
     yamlConfig.prompts = {};
     Object.entries(config.prompts).forEach(([key, prompt]) => {
+      // If alias is present, use alias (no version) - alias already points to a specific version
+      // If no alias, use version (if available) to specify which version to use
+      const hasAlias = prompt.alias && prompt.alias.trim() !== '';
+      
       yamlConfig.prompts[key] = {
         name: prompt.name,
-        ...(prompt.schema && { schema: formatSchemaReference(prompt.schema, definedSchemas) }),
+        ...(prompt.schema && { schema: formatSchemaReference(prompt.schema, definedSchemas, `prompts.${key}.schema`) }),
         ...(prompt.description && { description: prompt.description }),
         ...(prompt.default_template && { default_template: prompt.default_template }),
-        ...(prompt.alias && { alias: prompt.alias }),
-        ...(prompt.version !== undefined && { version: prompt.version }),
+        ...(hasAlias && { alias: prompt.alias }),
+        ...(!hasAlias && prompt.version !== undefined && { version: prompt.version }),
         ...(prompt.tags && Object.keys(prompt.tags).length > 0 && { tags: prompt.tags }),
       };
     });
@@ -1280,7 +1462,7 @@ export function generateYAML(config: AppConfig): string {
       
       yamlConfig.agents[key] = {
         name: agent.name,
-        model: formatModelReference(agent.model, definedLLMs),
+        model: formatModelReference(agent.model, definedLLMs, `agents.${key}.model`),
         ...(agent.description && { description: agent.description }),
         ...(toolsValue && toolsValue.length > 0 && { tools: toolsValue }),
         ...(guardrailsValue && guardrailsValue.length > 0 && { guardrails: guardrailsValue }),
@@ -1351,8 +1533,13 @@ export function generateYAML(config: AppConfig): string {
       ...(config.app.log_level && { log_level: config.app.log_level }),
       ...(appServicePrincipal && { service_principal: appServicePrincipal }),
       ...(config.app.endpoint_name && { endpoint_name: config.app.endpoint_name }),
-      ...(config.app.tags && { tags: config.app.tags }),
-      ...(config.app.permissions && { permissions: config.app.permissions }),
+      ...(config.app.workload_size && { workload_size: config.app.workload_size }),
+      ...(config.app.scale_to_zero !== undefined && { scale_to_zero: config.app.scale_to_zero }),
+      ...(config.app.environment_vars && Object.keys(config.app.environment_vars).length > 0 && { 
+        environment_vars: formatEnvironmentVars(config.app.environment_vars) 
+      }),
+      ...(config.app.tags && Object.keys(config.app.tags).length > 0 && { tags: config.app.tags }),
+      ...(config.app.permissions && config.app.permissions.length > 0 && { permissions: config.app.permissions }),
       ...(appAgentsValue && appAgentsValue.length > 0 && { agents: appAgentsValue }),
     };
     

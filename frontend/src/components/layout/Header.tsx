@@ -2,6 +2,7 @@ import { Download, Eye, EyeOff, Upload, RotateCcw, GitBranch, Rocket, MessageSqu
 import Button from '../ui/Button';
 import Modal from '../ui/Modal';
 import { useConfigStore } from '@/stores/configStore';
+import { useChatStore } from '@/stores/chatStore';
 import { downloadYAML } from '@/utils/yaml-generator';
 import { useRef, useState, useEffect } from 'react';
 import yaml from 'js-yaml';
@@ -19,6 +20,7 @@ interface HeaderProps {
 
 export default function Header({ showPreview, onTogglePreview }: HeaderProps) {
   const { config, setConfig, reset } = useConfigStore();
+  const { startNewSession } = useChatStore();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [daoAiVersion, setDaoAiVersion] = useState<string | null>(null);
   const [showVisualization, setShowVisualization] = useState(false);
@@ -61,6 +63,10 @@ export default function Header({ showPreview, onTogglePreview }: HeaderProps) {
         // Now parse the YAML (which will resolve aliases)
         const parsed = yaml.load(content) as AppConfig;
         setConfig(parsed);
+        
+        // Start a new chat session since the imported config is different
+        startNewSession();
+        console.log('[Import] Started new chat session for imported config');
       } catch (error) {
         console.error('Failed to parse YAML:', error);
         alert('Failed to parse YAML file. Please check the format.');
@@ -78,6 +84,7 @@ export default function Header({ showPreview, onTogglePreview }: HeaderProps) {
     if (confirm('Are you sure you want to reset all configuration? This cannot be undone.')) {
       clearYamlReferences();
       reset();
+      startNewSession(); // Clear chat history when resetting config
     }
   };
 
