@@ -85,6 +85,7 @@ export default function AppConfigSection() {
   const agents = config.agents || {};
   const llms = config.resources?.llms || {};
   const tools = config.tools || {};
+  const memory = config.memory;
 
   // App settings form
   const [formData, setFormData] = useState(() => {
@@ -280,6 +281,24 @@ export default function AppConfigSection() {
       return matchedKey || '';
     }).filter(Boolean);
   });
+  
+  // Memory reference for orchestration
+  const [orchestrationMemoryRef, setOrchestrationMemoryRef] = useState<string>(() => {
+    // Check if orchestration has a memory reference
+    const orchMemory = config.app?.orchestration?.memory as unknown;
+    if (orchMemory) {
+      // If it's a string reference like '*memory', extract the ref name
+      if (typeof orchMemory === 'string' && orchMemory.startsWith('*')) {
+        return orchMemory.slice(1);
+      }
+      // If memory config exists and has a refName, use it
+      if (config.memory?.refName) {
+        return config.memory.refName;
+      }
+      return 'memory'; // Default
+    }
+    return '';
+  });
 
   // Determine if there are unsaved changes
   const hasChanges = (() => {
@@ -351,6 +370,16 @@ export default function AppConfigSection() {
       });
       if (JSON.stringify(savedHandoffs) !== JSON.stringify(currentHandoffsDict)) return true;
     }
+    
+    // Check orchestration memory reference
+    const savedOrchMemory = app?.orchestration?.memory as unknown;
+    let savedOrchMemoryRef = '';
+    if (typeof savedOrchMemory === 'string' && savedOrchMemory.startsWith('*')) {
+      savedOrchMemoryRef = savedOrchMemory.slice(1);
+    } else if (config.memory?.refName && savedOrchMemory) {
+      savedOrchMemoryRef = config.memory.refName;
+    }
+    if (orchestrationMemoryRef !== savedOrchMemoryRef) return true;
     
     // Check tags
     const savedTags = (app?.tags as Record<string, string | boolean | number>) || {};
@@ -529,6 +558,20 @@ export default function AppConfigSection() {
       setHandoffs([]);
     }
     
+    // Sync orchestration memory reference
+    const orchMemory = app?.orchestration?.memory as unknown;
+    if (orchMemory) {
+      if (typeof orchMemory === 'string' && orchMemory.startsWith('*')) {
+        setOrchestrationMemoryRef(orchMemory.slice(1));
+      } else if (config.memory?.refName) {
+        setOrchestrationMemoryRef(config.memory.refName);
+      } else {
+        setOrchestrationMemoryRef('memory');
+      }
+    } else {
+      setOrchestrationMemoryRef('');
+    }
+    
     // Sync tags
     setTags((app?.tags as Record<string, string | boolean | number>) || {});
     
@@ -563,9 +606,10 @@ export default function AppConfigSection() {
   }, [app, agents, llms, tools]);
 
   // Auto-adjust orchestration pattern based on number of selected agents
+  // Single agent always uses "No Orchestration" in the UI, but YAML may output swarm if memory is configured
   useEffect(() => {
     if (selectedAgents.length <= 1) {
-      // Single agent or no agents - must use "No Orchestration"
+      // Single agent or no agents - UI shows "No Orchestration"
       if (pattern !== 'none') {
         setPattern('none');
       }
@@ -655,6 +699,8 @@ export default function AppConfigSection() {
           ...(supervisorToolsArray.length > 0 && { tools: supervisorToolsArray }),
           ...(supervisorPrompt && { prompt: supervisorPrompt }),
         },
+        // Add memory reference if configured
+        ...(orchestrationMemoryRef && { memory: `*${orchestrationMemoryRef}` }),
       };
     } else if (pattern === 'swarm' && selectedLLM && llms[selectedLLM]) {
       const handoffsDict: Record<string, string[] | null> = {};
@@ -674,7 +720,46 @@ export default function AppConfigSection() {
           ...(defaultAgent && agents[defaultAgent] && { default_agent: defaultAgent }),
           ...(Object.keys(handoffsDict).length > 0 && { handoffs: handoffsDict }),
         },
+        // Add memory reference if configured
+        ...(orchestrationMemoryRef && { memory: `*${orchestrationMemoryRef}` }),
       };
+    } else if (pattern === 'none' && orchestrationMemoryRef) {
+      // Single agent with memory - preserve existing orchestration config if present, otherwise create minimal swarm
+      // This ensures we don't wipe out existing settings (like model) when just adding memory
+      const existingOrchestration = config.app?.orchestration;
+      if (existingOrchestration?.supervisor) {
+        // Preserve existing supervisor config
+        orchestration = {
+          supervisor: existingOrchestration.supervisor,
+          memory: `*${orchestrationMemoryRef}`,
+        };
+      } else if (existingOrchestration?.swarm) {
+        // Preserve existing swarm config
+        orchestration = {
+          swarm: existingOrchestration.swarm,
+          memory: `*${orchestrationMemoryRef}`,
+        };
+      } else {
+        // No existing orchestration - create swarm for memory support using agent's model
+        // Try to get model from: 1) top-level agents dict, 2) app.agents array, 3) fallback to empty
+        let agentModel: any = undefined;
+        
+        // First try: Get from top-level agents dictionary using selectedAgents keys
+        const firstAgentKey = selectedAgents[0];
+        if (firstAgentKey && agents[firstAgentKey]) {
+          agentModel = agents[firstAgentKey].model;
+        }
+        
+        // Second try: Get from app.agents array if top-level didn't work
+        if (!agentModel && app?.agents && Array.isArray(app.agents) && app.agents.length > 0) {
+          agentModel = app.agents[0].model;
+        }
+        
+        orchestration = {
+          swarm: agentModel ? { model: agentModel } : {},
+          memory: `*${orchestrationMemoryRef}`,
+        };
+      }
     }
 
     // Build agents array from selected agent keys
@@ -1361,6 +1446,35 @@ export default function AppConfigSection() {
             <Badge variant="info" className="text-[10px] px-1.5 py-0">Swarm</Badge>
             <span>Agents hand off conversations directly to each other based on handoff rules.</span>
           </div>
+        </div>
+
+        {/* Memory Selector - Always visible, disabled when no memory is configured */}
+        <div className="space-y-2 pt-4 border-t border-slate-700">
+          <Select
+            label="Memory"
+            options={
+              memory
+                ? [
+                    { value: '', label: 'No memory (stateless)' },
+                    ...(memory.refName ? [{ value: memory.refName, label: `*${memory.refName}` }] : [{ value: 'memory', label: '*memory' }]),
+                  ]
+                : [{ value: '', label: 'No memory configured' }]
+            }
+            value={orchestrationMemoryRef}
+            onChange={(e) => setOrchestrationMemoryRef(e.target.value)}
+            hint={memory ? "Assign configured memory to enable conversation persistence" : "Configure memory in the Memory section first"}
+            disabled={!memory}
+          />
+          {!memory && (
+            <p className="text-xs text-amber-400">
+              ⚠️ Add a memory configuration in the <strong>Memory</strong> section to enable conversation persistence.
+            </p>
+          )}
+          {orchestrationMemoryRef && selectedAgents.length === 1 && pattern === 'none' && (
+            <p className="text-xs text-cyan-400">
+              💡 With a single agent and memory, swarm orchestration will be used automatically.
+            </p>
+          )}
         </div>
       </Card>
 

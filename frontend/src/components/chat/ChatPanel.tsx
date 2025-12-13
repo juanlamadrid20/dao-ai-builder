@@ -76,6 +76,12 @@ export default function ChatPanel({ onClose }: ChatPanelProps) {
   const [errorTrace, setErrorTrace] = useState<string | null>(null);
   const [logsExpanded, setLogsExpanded] = useState(false);
   const [credentialsExpanded, setCredentialsExpanded] = useState(false);
+  const [customInputsExpanded, setCustomInputsExpanded] = useState(false);
+  const [customInputsJson, setCustomInputsJson] = useState('');
+  const [customInputsError, setCustomInputsError] = useState<string | null>(null);
+  const [customInputsManuallySet, setCustomInputsManuallySet] = useState(false);
+  const [customOutputs, setCustomOutputs] = useState<Record<string, unknown> | null>(null);
+  const [customOutputsExpanded, setCustomOutputsExpanded] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const logsEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -141,6 +147,22 @@ export default function ChatPanel({ onClose }: ChatPanelProps) {
       const credentials = useCredentialStore.getState().getCredentials();
       addLog('debug', `Using ${credentials.type} authentication`);
 
+      // Parse custom_inputs JSON if provided
+      let customInputs: Record<string, unknown> = {};
+      if (customInputsJson.trim()) {
+        try {
+          customInputs = JSON.parse(customInputsJson);
+          setCustomInputsError(null);
+          addLog('debug', `Custom inputs provided: ${Object.keys(customInputs).join(', ')}`);
+        } catch (e) {
+          setCustomInputsError('Invalid JSON format');
+          throw new Error('Invalid custom_inputs JSON');
+        }
+      }
+
+      // Reset custom outputs before new request
+      setCustomOutputs(null);
+
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -151,7 +173,8 @@ export default function ChatPanel({ onClose }: ChatPanelProps) {
           context: {
             thread_id: conversationId,
             user_id: 'builder-user'
-          }
+          },
+          custom_inputs: Object.keys(customInputs).length > 0 ? customInputs : undefined
         })
       });
 
@@ -190,6 +213,16 @@ export default function ChatPanel({ onClose }: ChatPanelProps) {
                   case 'delta':
                     accumulatedContent += data.content;
                     updateLastMessage(accumulatedContent);
+                    break;
+                    
+                  case 'custom_outputs':
+                    setCustomOutputs(data.data);
+                    setCustomOutputsExpanded(true);
+                    // Auto-populate custom_inputs from custom_outputs if not manually set
+                    if (!customInputsManuallySet && data.data && Object.keys(data.data).length > 0) {
+                      setCustomInputsJson(JSON.stringify(data.data, null, 2));
+                      addLog('info', 'Auto-populated custom_inputs from custom_outputs');
+                    }
                     break;
                     
                   case 'done':
@@ -235,6 +268,10 @@ export default function ChatPanel({ onClose }: ChatPanelProps) {
     startNewSession();
     setError(null);
     setErrorTrace(null);
+    // Reset custom inputs/outputs for new session
+    setCustomInputsJson('');
+    setCustomInputsManuallySet(false);
+    setCustomOutputs(null);
   };
 
   const formatTime = (timestamp: string) => {
@@ -388,6 +425,59 @@ export default function ChatPanel({ onClose }: ChatPanelProps) {
                 onChange={(e) => setManualPat(e.target.value)}
                 className="w-full px-3 py-1.5 text-sm bg-slate-900 border border-slate-600 rounded-md text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-cyan-500"
               />
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Custom Inputs Configuration */}
+      <div className="border-b border-slate-700">
+        <button
+          onClick={() => setCustomInputsExpanded(!customInputsExpanded)}
+          className="w-full flex items-center justify-between p-2 text-xs hover:bg-slate-800/50 transition-colors"
+        >
+          <div className="flex items-center gap-2">
+            <Hash className="w-3.5 h-3.5 text-slate-400" />
+            <span className="text-slate-400">Custom Inputs:</span>
+            <span className="text-slate-300">
+              {customInputsJson.trim() ? 'Configured' : 'None'}
+            </span>
+            {customInputsError && (
+              <span className="text-red-400 text-xs">({customInputsError})</span>
+            )}
+          </div>
+          {customInputsExpanded ? (
+            <ChevronUp className="w-4 h-4 text-slate-400" />
+          ) : (
+            <ChevronDown className="w-4 h-4 text-slate-400" />
+          )}
+        </button>
+        
+        {customInputsExpanded && (
+          <div className="p-3 bg-slate-800/30 space-y-2">
+            <p className="text-xs text-slate-500">
+              Optional JSON object to pass as custom_inputs to the agent.
+              Example: {`{"genie_conversation_ids": {"my_room": "abc123"}}`}
+            </p>
+            <textarea
+              value={customInputsJson}
+              onChange={(e) => {
+                setCustomInputsJson(e.target.value);
+                setCustomInputsError(null);
+                setCustomInputsManuallySet(true);
+              }}
+              placeholder='{"key": "value"}'
+              rows={3}
+              className={`w-full px-3 py-2 text-sm bg-slate-900 border rounded-md text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-1 font-mono ${
+                customInputsError
+                  ? 'border-red-500 focus:ring-red-500'
+                  : 'border-slate-600 focus:ring-cyan-500'
+              }`}
+            />
+            {!customInputsManuallySet && customInputsJson && (
+              <p className="text-xs text-cyan-400 mt-1">
+                ↻ Auto-populated from previous response
+              </p>
             )}
           </div>
         )}
@@ -551,6 +641,37 @@ export default function ChatPanel({ onClose }: ChatPanelProps) {
               Press Enter to send • Shift+Enter for new line
             </p>
           </div>
+
+          {/* Custom Outputs Display */}
+          {customOutputs && Object.keys(customOutputs).length > 0 && (
+            <div className="mt-4 border border-emerald-500/30 rounded-lg overflow-hidden">
+              <button
+                onClick={() => setCustomOutputsExpanded(!customOutputsExpanded)}
+                className="w-full flex items-center justify-between px-4 py-2 bg-emerald-900/20 hover:bg-emerald-900/30 transition-colors"
+              >
+                <div className="flex items-center gap-2">
+                  <Info className="w-4 h-4 text-emerald-400" />
+                  <span className="text-sm font-medium text-emerald-300">Custom Outputs</span>
+                  <span className="px-1.5 py-0.5 text-[10px] font-medium bg-emerald-500/20 text-emerald-400 rounded">
+                    {Object.keys(customOutputs).length} {Object.keys(customOutputs).length === 1 ? 'key' : 'keys'}
+                  </span>
+                </div>
+                {customOutputsExpanded ? (
+                  <ChevronDown className="w-4 h-4 text-emerald-400" />
+                ) : (
+                  <ChevronUp className="w-4 h-4 text-emerald-400" />
+                )}
+              </button>
+              
+              {customOutputsExpanded && (
+                <div className="p-3 bg-emerald-900/10 max-h-40 overflow-y-auto">
+                  <pre className="text-xs text-emerald-300 font-mono whitespace-pre-wrap">
+                    {JSON.stringify(customOutputs, null, 2)}
+                  </pre>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Collapsible Logs Panel */}
           <div className="mt-4 border border-slate-700 rounded-lg overflow-hidden">

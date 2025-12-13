@@ -659,15 +659,26 @@ function formatOrchestration(orchestration: OrchestrationModel, definedLLMs: Rec
     }
   }
   
-  // Handle memory - check if it was originally a reference
+  // Handle memory - can be a string reference like '*memory' or a MemoryModel object
   if (orchestration.memory) {
-    const memoryRef = findOriginalReference('orchestration.memory', orchestration.memory);
-    if (memoryRef) {
-      result.memory = createReference(memoryRef);
+    const memoryValue = orchestration.memory as unknown;
+    if (typeof memoryValue === 'string') {
+      // It's already a string reference like '*memory'
+      if (memoryValue.startsWith('*')) {
+        result.memory = createReference(memoryValue.slice(1));
+      } else {
+        result.memory = createReference(memoryValue);
+      }
     } else {
-      // If there's a top-level memory config, reference it
-      // This handles the case where memory is defined at the config level
-      result.memory = createReference('memory');
+      // It's a MemoryModel object - check if it was originally a reference
+      const memoryRef = findOriginalReference('orchestration.memory', memoryValue);
+      if (memoryRef) {
+        result.memory = createReference(memoryRef);
+      } else {
+        // If there's a top-level memory config, reference it
+        // This handles the case where memory is defined at the config level
+        result.memory = createReference('memory');
+      }
     }
   }
   

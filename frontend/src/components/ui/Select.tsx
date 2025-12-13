@@ -50,8 +50,11 @@ const Select = forwardRef<HTMLSelectElement, SelectProps>(
                 className={clsx(
                   'w-full px-3 py-2 bg-slate-800/50 border rounded-lg text-slate-200 appearance-none',
                   'focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500',
-                  'transition-all duration-200 cursor-pointer',
+                  'transition-all duration-200',
                   error ? 'border-red-500/50' : 'border-slate-700',
+                  props.disabled 
+                    ? 'opacity-50 cursor-not-allowed text-slate-500' 
+                    : 'cursor-pointer',
                   className
                 )}
                 {...props}

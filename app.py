@@ -15,6 +15,7 @@ Deployment:
 """
 import os
 import sys
+import json
 import secrets
 import logging
 import urllib.parse
@@ -3683,6 +3684,12 @@ def chat_with_agent():
                 custom_data['configurable'] = context
                 yield from send_log('debug', f"Context: thread_id={context.get('thread_id', 'none')}, user_id={context.get('user_id', 'none')}")
             
+            # Add any custom_inputs from the request
+            custom_inputs_from_request = data.get('custom_inputs', {})
+            if custom_inputs_from_request:
+                custom_data.update(custom_inputs_from_request)
+                yield from send_log('debug', f"Custom inputs: {list(custom_inputs_from_request.keys())}")
+            
             # Create the request
             agent_request = ResponsesAgentRequest(
                 input=input_items,
@@ -3696,6 +3703,7 @@ def chat_with_agent():
                 full_response = ""
                 
                 # Check if agent has predict_stream method
+                custom_outputs = None
                 if hasattr(agent, 'predict_stream'):
                     yield from send_log('debug', "Using streaming mode")
                     
@@ -3716,6 +3724,13 @@ def chat_with_agent():
                                             # Use full text if we didn't get deltas
                                             if not full_response:
                                                 full_response = content_item.text
+                                # Extract custom_outputs if available
+                                yield from send_log('debug', f"Checking for custom_outputs on event: hasattr={hasattr(event, 'custom_outputs')}")
+                                if hasattr(event, 'custom_outputs'):
+                                    yield from send_log('debug', f"custom_outputs value: {event.custom_outputs}")
+                                    if event.custom_outputs:
+                                        custom_outputs = event.custom_outputs
+                                        yield from send_log('debug', f"Captured custom_outputs")
                 else:
                     # Fallback to non-streaming mode
                     yield from send_log('warning', "Streaming not available, using standard mode")
@@ -3735,12 +3750,41 @@ def chat_with_agent():
                             elif hasattr(item, 'text'):
                                 full_response += item.text
                                 yield from send_delta(item.text)
+                    
+                    # Extract custom_outputs from non-streaming response
+                    if hasattr(response, 'custom_outputs') and response.custom_outputs:
+                        custom_outputs = response.custom_outputs
                 
                 if not full_response:
                     yield from send_log('warning', "No response text extracted")
                     full_response = "No response generated"
                 else:
                     yield from send_log('info', f"Completed: {len(full_response)} characters")
+                
+                # Include custom_outputs in done event if available
+                if custom_outputs:
+                    yield from send_log('debug', f"Raw custom_outputs type: {type(custom_outputs).__name__}")
+                    yield from send_log('debug', f"Raw custom_outputs keys: {list(custom_outputs.keys()) if hasattr(custom_outputs, 'keys') else 'N/A'}")
+                    
+                    # Convert to dict if it's a Pydantic model or similar
+                    if hasattr(custom_outputs, 'model_dump'):
+                        custom_outputs = custom_outputs.model_dump()
+                    elif hasattr(custom_outputs, 'dict'):
+                        custom_outputs = custom_outputs.dict()
+                    elif not isinstance(custom_outputs, dict):
+                        custom_outputs = dict(custom_outputs)
+                    
+                    # Filter out configurable from custom_outputs for display
+                    display_outputs = {k: v for k, v in custom_outputs.items() if k != 'configurable'}
+                    
+                    if display_outputs:
+                        yield from send_log('info', f"Custom outputs received: {list(display_outputs.keys())}")
+                        try:
+                            yield f"data: {json.dumps({'type': 'custom_outputs', 'data': display_outputs})}\n\n"
+                        except (TypeError, ValueError) as e:
+                            yield from send_log('warning', f"Could not serialize custom_outputs: {str(e)}")
+                    else:
+                        yield from send_log('debug', "No display outputs after filtering configurable")
                 
                 yield from send_done(full_response)
                 
