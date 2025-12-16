@@ -6,7 +6,6 @@ import {
   Clock, 
   AlertTriangle,
   Zap,
-  Layers,
   RefreshCw,
   Server,
   Database,
@@ -101,7 +100,6 @@ export default function DeploymentPanel({ onClose }: DeploymentPanelProps) {
     deploymentId,
     deploymentStatus,
     isDeploying,
-    selectedOption,
     startDeployment,
     setDeploymentId,
     setDeploymentStatus,
@@ -112,7 +110,6 @@ export default function DeploymentPanel({ onClose }: DeploymentPanelProps) {
   
   const [validation, setValidation] = useState<ValidationResult | null>(null);
   const [isValidating, setIsValidating] = useState(false);
-  const [localSelectedOption, setLocalSelectedOption] = useState<'quick' | 'full'>(selectedOption);
   const [error, setError] = useState<string | null>(null);
   
   // Credential selection state
@@ -245,7 +242,7 @@ export default function DeploymentPanel({ onClose }: DeploymentPanelProps) {
     setError(null);
     
     // Start deployment in the store (this persists across modal closes)
-    startDeployment(localSelectedOption);
+    startDeployment('quick');
     
     // Build credential configuration
     const credentials: CredentialConfig = { type: credentialType };
@@ -257,7 +254,7 @@ export default function DeploymentPanel({ onClose }: DeploymentPanelProps) {
     }
     
     try {
-      const endpoint = localSelectedOption === 'quick' ? '/api/deploy/quick' : '/api/deploy/full';
+      const endpoint = '/api/deploy/quick';
       
       // Generate YAML and parse it back to get a clean config without internal fields
       const yamlContent = generateYAML(config);
@@ -549,84 +546,27 @@ export default function DeploymentPanel({ onClose }: DeploymentPanelProps) {
                 Deployment Options
               </h4>
               
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                {/* Quick Deploy */}
-                <button
-                  onClick={() => setLocalSelectedOption('quick')}
-                  className={`p-4 rounded-xl border text-left transition-all ${
-                    localSelectedOption === 'quick'
-                      ? 'bg-blue-950/40 border-blue-500 ring-1 ring-blue-500/50'
-                      : 'bg-slate-800/30 border-slate-700 hover:border-slate-600'
-                  }`}
-                  disabled={!validation.deployment_options.quick.available}
-                >
-                  <div className="flex items-center gap-2 mb-2">
-                    <div className="p-1.5 rounded-lg bg-blue-500/20">
-                      <Zap className="w-4 h-4 text-blue-400" />
-                    </div>
-                    <span className="font-medium text-slate-100">Quick Deploy</span>
-                    {localSelectedOption === 'quick' && (
-                      <CheckCircle2 className="w-4 h-4 text-blue-400 ml-auto" />
-                    )}
+              <div className="p-4 rounded-xl border bg-blue-950/40 border-blue-500 ring-1 ring-blue-500/50">
+                <div className="flex items-center gap-2 mb-2">
+                  <div className="p-1.5 rounded-lg bg-blue-500/20">
+                    <Zap className="w-4 h-4 text-blue-400" />
                   </div>
-                  <p className="text-xs text-slate-400 mb-3">
-                    {validation.deployment_options.quick.description}
-                  </p>
-                  <div className="flex flex-wrap gap-1">
-                    {validation.deployment_options.quick.provisions.map((item, idx) => (
-                      <span 
-                        key={idx}
-                        className="px-2 py-0.5 text-[10px] bg-slate-700/50 rounded text-slate-300"
-                      >
-                        {item}
-                      </span>
-                    ))}
-                  </div>
-                </button>
-
-                {/* Full Deploy */}
-                <button
-                  onClick={() => setLocalSelectedOption('full')}
-                  className={`p-4 rounded-xl border text-left transition-all ${
-                    localSelectedOption === 'full'
-                      ? 'bg-purple-950/40 border-purple-500 ring-1 ring-purple-500/50'
-                      : 'bg-slate-800/30 border-slate-700 hover:border-slate-600'
-                  } ${!validation.deployment_options.full.available ? 'opacity-50 cursor-not-allowed' : ''}`}
-                  disabled={!validation.deployment_options.full.available}
-                >
-                  <div className="flex items-center gap-2 mb-2">
-                    <div className="p-1.5 rounded-lg bg-purple-500/20">
-                      <Layers className="w-4 h-4 text-purple-400" />
-                    </div>
-                    <span className="font-medium text-slate-100">Full Pipeline</span>
-                    {localSelectedOption === 'full' && (
-                      <CheckCircle2 className="w-4 h-4 text-purple-400 ml-auto" />
-                    )}
-                  </div>
-                  <p className="text-xs text-slate-400 mb-3">
-                    {validation.deployment_options.full.description}
-                  </p>
-                  <div className="flex flex-wrap gap-1">
-                    {validation.deployment_options.full.provisions.slice(0, 4).map((item, idx) => (
-                      <span 
-                        key={idx}
-                        className="px-2 py-0.5 text-[10px] bg-slate-700/50 rounded text-slate-300"
-                      >
-                        {item}
-                      </span>
-                    ))}
-                    {validation.deployment_options.full.provisions.length > 4 && (
-                      <span className="px-2 py-0.5 text-[10px] bg-slate-700/50 rounded text-slate-400">
-                        +{validation.deployment_options.full.provisions.length - 4} more
-                      </span>
-                    )}
-                  </div>
-                  {validation.deployment_options.full.requires_bundle && (
-                    <p className="text-[10px] text-amber-400 mt-2">
-                      ⚠️ Requires Databricks Asset Bundle CLI
-                    </p>
-                  )}
-                </button>
+                  <span className="font-medium text-slate-100">Quick Deploy</span>
+                  <CheckCircle2 className="w-4 h-4 text-blue-400 ml-auto" />
+                </div>
+                <p className="text-xs text-slate-400 mb-3">
+                  {validation.deployment_options.quick.description}
+                </p>
+                <div className="flex flex-wrap gap-1">
+                  {validation.deployment_options.quick.provisions.map((item, idx) => (
+                    <span 
+                      key={idx}
+                      className="px-2 py-0.5 text-[10px] bg-slate-700/50 rounded text-slate-300"
+                    >
+                      {item}
+                    </span>
+                  ))}
+                </div>
               </div>
             </div>
           )}
@@ -783,7 +723,7 @@ export default function DeploymentPanel({ onClose }: DeploymentPanelProps) {
                 ) : (
                   <>
                     <Rocket className="w-4 h-4" />
-                    Deploy {localSelectedOption === 'quick' ? 'Quick' : 'Full Pipeline'}
+                    Deploy
                   </>
                 )}
               </Button>
