@@ -14,6 +14,7 @@ import { useFunctions, useVectorSearchIndexes } from '@/hooks/useDatabricks';
 import { normalizeRefNameWhileTyping } from '@/utils/name-utils';
 import { safeDelete } from '@/utils/safe-delete';
 import { useYamlScrollStore } from '@/stores/yamlScrollStore';
+import { getYamlReferences } from '@/utils/yaml-references';
 
 // Resource source toggle type
 type ResourceSource = 'configured' | 'select';
@@ -331,6 +332,28 @@ export default function ToolsSection() {
     genieSpaceId: '',
     geniePersistConversation: true, // Default to true per factory function
     genieTruncateResults: false, // Default to false per factory function
+    // Genie LRU Cache
+    genieLruCacheEnabled: false,
+    genieLruCacheCapacity: 1000,
+    genieLruCacheTtl: 86400, // 1 day in seconds
+    genieLruCacheTtlNeverExpires: false,
+    genieLruCacheWarehouseSource: 'configured' as ResourceSource,
+    genieLruCacheWarehouseRefName: '',
+    genieLruCacheWarehouseId: '',
+    // Genie Semantic Cache
+    genieSemanticCacheEnabled: false,
+    genieSemanticCacheTtl: 86400, // 1 day in seconds
+    genieSemanticCacheTtlNeverExpires: false,
+    genieSemanticCacheSimilarityThreshold: 0.85,
+    genieSemanticCacheEmbeddingModelSource: 'configured' as ResourceSource,
+    genieSemanticCacheEmbeddingModelRefName: '',
+    genieSemanticCacheEmbeddingModelManual: 'databricks-gte-large-en',
+    genieSemanticCacheTableName: 'genie_semantic_cache',
+    genieSemanticCacheDatabaseSource: 'configured' as ResourceSource,
+    genieSemanticCacheDatabaseRefName: '',
+    genieSemanticCacheWarehouseSource: 'configured' as ResourceSource,
+    genieSemanticCacheWarehouseRefName: '',
+    genieSemanticCacheWarehouseId: '',
     // For Warehouse - with resource source
     warehouseSource: 'configured' as ResourceSource, // Default to configured
     warehouseRefName: '', // Reference to configured warehouse
@@ -377,6 +400,8 @@ export default function ToolsSection() {
   const configuredFunctions = config.resources?.functions || {};
   const configuredConnections = config.resources?.connections || {};
   const configuredLlms = config.resources?.llms || {};
+  const configuredWarehouses = config.resources?.warehouses || {};
+  const configuredDatabases = config.resources?.databases || {};
 
   // Helper functions to find configured resources by matching properties
   const findConfiguredGenieRoom = (genieRoom: { space_id?: string; name?: string }): string | null => {
@@ -407,6 +432,44 @@ export default function ToolsSection() {
     for (const [key, l] of Object.entries(configuredLlms)) {
       if (llm.name && l.name === llm.name) return key;
     }
+    return null;
+  };
+
+  const findConfiguredWarehouse = (warehouse: { warehouse_id?: string }): string | null => {
+    for (const [key, wh] of Object.entries(configuredWarehouses)) {
+      if (warehouse.warehouse_id && wh.warehouse_id === warehouse.warehouse_id) return key;
+    }
+    return null;
+  };
+
+  const findConfiguredDatabase = (database: { name?: string }): string | null => {
+    for (const [key, db] of Object.entries(configuredDatabases)) {
+      if (database.name && db.name === database.name) return key;
+    }
+    return null;
+  };
+
+  // Helper to find the original reference name for a path using YAML references
+  const findOriginalReferenceForPath = (path: string): string | null => {
+    const refs = getYamlReferences();
+    if (!refs) return null;
+    
+    // Normalize path for comparison
+    const normalizedPath = path.toLowerCase().replace(/-/g, '_');
+    
+    // Check aliasUsage to see if this path had a reference
+    for (const [anchorName, usagePaths] of Object.entries(refs.aliasUsage)) {
+      for (const usagePath of usagePaths) {
+        const normalizedUsagePath = usagePath.toLowerCase().replace(/-/g, '_');
+        // Check for exact match or suffix match
+        if (normalizedPath === normalizedUsagePath || 
+            normalizedPath.endsWith(normalizedUsagePath) ||
+            normalizedUsagePath.endsWith(normalizedPath)) {
+          return anchorName;
+        }
+      }
+    }
+    
     return null;
   };
 
@@ -456,6 +519,14 @@ export default function ToolsSection() {
   const configuredLlmOptions = Object.entries(configuredLlms).map(([key, llm]) => ({
     value: key,
     label: `${key} (${llm.name || key})`,
+  }));
+  const configuredWarehouseOptions = Object.entries(configuredWarehouses).map(([key, wh]) => ({
+    value: key,
+    label: `${key} (${wh.name || key})`,
+  }));
+  const configuredDatabaseOptions = Object.entries(configuredDatabases).map(([key, db]) => ({
+    value: key,
+    label: `${key} (${db.name || key})`,
   }));
 
   const tools = config.tools || {};
@@ -618,31 +689,75 @@ export default function ToolsSection() {
       
       // Build args based on selected factory tool
       if (formData.functionName === 'dao_ai.tools.create_genie_tool') {
-        // If using a configured genie room, reference it directly
+        // Build base args
+        const genieArgs: Record<string, unknown> = {
+          name: formData.name,
+          description: `Tool for querying via Genie`,
+          persist_conversation: formData.geniePersistConversation,
+          truncate_results: formData.genieTruncateResults,
+        };
+
+        // Add genie_room reference or inline
         if (formData.genieSource === 'configured' && formData.genieRefName) {
-          parsedArgs = {
-            name: formData.name,
-            description: `Tool for querying via Genie`,
-            genie_room: `__REF__${formData.genieRefName}`,
-            persist_conversation: formData.geniePersistConversation,
-            truncate_results: formData.genieTruncateResults,
-          };
+          genieArgs.genie_room = `__REF__${formData.genieRefName}`;
         } else {
-          // Direct selection - use space_id object
-          parsedArgs = {
-            name: formData.name,
-            description: `Tool for querying via Genie`,
-            genie_room: {
-              space_id: formData.genieSpaceId,
-            },
-            persist_conversation: formData.geniePersistConversation,
-            truncate_results: formData.genieTruncateResults,
+          genieArgs.genie_room = {
+          space_id: formData.genieSpaceId,
           };
         }
+
+        // Add LRU cache parameters if enabled
+        if (formData.genieLruCacheEnabled) {
+          const lruCacheParams: Record<string, unknown> = {
+            capacity: formData.genieLruCacheCapacity,
+            time_to_live_seconds: formData.genieLruCacheTtlNeverExpires ? null : formData.genieLruCacheTtl,
+          };
+          // Add warehouse reference or inline
+          if (formData.genieLruCacheWarehouseSource === 'configured' && formData.genieLruCacheWarehouseRefName) {
+            lruCacheParams.warehouse = `__REF__${formData.genieLruCacheWarehouseRefName}`;
+          } else if (formData.genieLruCacheWarehouseId) {
+            lruCacheParams.warehouse = {
+              name: 'lru_cache_warehouse',
+              warehouse_id: formData.genieLruCacheWarehouseId,
+            };
+          }
+          genieArgs.lru_cache_parameters = lruCacheParams;
+        }
+
+        // Add semantic cache parameters if enabled
+        if (formData.genieSemanticCacheEnabled) {
+          const semanticCacheParams: Record<string, unknown> = {
+            time_to_live_seconds: formData.genieSemanticCacheTtlNeverExpires ? null : formData.genieSemanticCacheTtl,
+            similarity_threshold: formData.genieSemanticCacheSimilarityThreshold,
+            table_name: formData.genieSemanticCacheTableName,
+          };
+          // Add embedding model - configured LLM reference or manual string
+          if (formData.genieSemanticCacheEmbeddingModelSource === 'configured' && formData.genieSemanticCacheEmbeddingModelRefName) {
+            semanticCacheParams.embedding_model = `__REF__${formData.genieSemanticCacheEmbeddingModelRefName}`;
+          } else if (formData.genieSemanticCacheEmbeddingModelManual) {
+            semanticCacheParams.embedding_model = formData.genieSemanticCacheEmbeddingModelManual;
+          }
+          // Add database reference
+          if (formData.genieSemanticCacheDatabaseSource === 'configured' && formData.genieSemanticCacheDatabaseRefName) {
+            semanticCacheParams.database = `__REF__${formData.genieSemanticCacheDatabaseRefName}`;
+          }
+          // Add warehouse reference or inline
+          if (formData.genieSemanticCacheWarehouseSource === 'configured' && formData.genieSemanticCacheWarehouseRefName) {
+            semanticCacheParams.warehouse = `__REF__${formData.genieSemanticCacheWarehouseRefName}`;
+          } else if (formData.genieSemanticCacheWarehouseId) {
+            semanticCacheParams.warehouse = {
+              name: 'semantic_cache_warehouse',
+              warehouse_id: formData.genieSemanticCacheWarehouseId,
+            };
+          }
+          genieArgs.semantic_cache_parameters = semanticCacheParams;
+        }
+
+        parsedArgs = genieArgs;
       } else if (formData.functionName === 'dao_ai.tools.create_vector_search_tool') {
         // Vector search tool uses a retriever reference
         if (formData.retrieverSource === 'configured' && formData.retrieverRefName) {
-          parsedArgs = {
+        parsedArgs = {
             name: formData.name,
             ...(formData.vectorSearchDescription && { description: formData.vectorSearchDescription }),
             retriever: `__REF__${formData.retrieverRefName}`,
@@ -652,8 +767,8 @@ export default function ToolsSection() {
           parsedArgs = {
             name: formData.name,
             ...(formData.vectorSearchDescription && { description: formData.vectorSearchDescription }),
-            index_name: formData.vectorIndex,
-          };
+          index_name: formData.vectorIndex,
+        };
         }
       } else if (formData.functionName === 'dao_ai.tools.create_send_slack_message_tool') {
         // Slack message tool configuration
@@ -728,15 +843,15 @@ export default function ToolsSection() {
 
       // If using a configured function resource, use YAML merge reference
       if (formData.functionSource === 'configured' && formData.functionRefName) {
-        functionConfig = {
-          type: 'unity_catalog',
+      functionConfig = {
+        type: 'unity_catalog',
           __MERGE__: formData.functionRefName, // Will be converted to <<: *ref in YAML
           ...(partialArgs && { partial_args: partialArgs }),
           ...(hitlConfig && { human_in_the_loop: hitlConfig }),
-        };
-      } else {
+      };
+    } else {
         // Direct selection - include schema and name inline
-        functionConfig = {
+      functionConfig = {
           type: 'unity_catalog',
           schema: {
             catalog_name: formData.ucCatalog,
@@ -803,6 +918,28 @@ export default function ToolsSection() {
       genieSpaceId: '',
       geniePersistConversation: true,
       genieTruncateResults: false,
+      // Genie LRU Cache
+      genieLruCacheEnabled: false,
+      genieLruCacheCapacity: 1000,
+      genieLruCacheTtl: 86400,
+      genieLruCacheTtlNeverExpires: false,
+      genieLruCacheWarehouseSource: 'configured',
+      genieLruCacheWarehouseRefName: '',
+      genieLruCacheWarehouseId: '',
+      // Genie Semantic Cache
+      genieSemanticCacheEnabled: false,
+      genieSemanticCacheTtl: 86400,
+      genieSemanticCacheTtlNeverExpires: false,
+      genieSemanticCacheSimilarityThreshold: 0.85,
+      genieSemanticCacheEmbeddingModelSource: 'configured',
+      genieSemanticCacheEmbeddingModelRefName: '',
+      genieSemanticCacheEmbeddingModelManual: 'databricks-gte-large-en',
+      genieSemanticCacheTableName: 'genie_semantic_cache',
+      genieSemanticCacheDatabaseSource: 'configured',
+      genieSemanticCacheDatabaseRefName: '',
+      genieSemanticCacheWarehouseSource: 'configured',
+      genieSemanticCacheWarehouseRefName: '',
+      genieSemanticCacheWarehouseId: '',
       warehouseSource: 'configured',
       warehouseRefName: '',
       warehouseId: '',
@@ -984,6 +1121,155 @@ export default function ToolsSection() {
           }
         }
         
+        // Extract LRU cache parameters
+        let genieLruCacheEnabled = false;
+        let genieLruCacheCapacity = 1000;
+        let genieLruCacheTtl = 86400;
+        let genieLruCacheTtlNeverExpires = false;
+        let genieLruCacheWarehouseSource: ResourceSource = 'configured';
+        let genieLruCacheWarehouseRefName = '';
+        let genieLruCacheWarehouseId = '';
+        
+        if (args.lru_cache_parameters) {
+          genieLruCacheEnabled = true;
+          const lruParams = args.lru_cache_parameters as Record<string, unknown>;
+          genieLruCacheCapacity = (lruParams.capacity as number) ?? 1000;
+          if (lruParams.time_to_live_seconds === null) {
+            genieLruCacheTtlNeverExpires = true;
+          } else {
+            genieLruCacheTtl = (lruParams.time_to_live_seconds as number) ?? 86400;
+          }
+          // Extract warehouse reference - first check YAML references, then __REF__ marker, then match
+          const lruWarehouseRefPath = `tools.${key}.function.args.lru_cache_parameters.warehouse`;
+          const lruWarehouseOriginalRef = findOriginalReferenceForPath(lruWarehouseRefPath);
+          
+          if (lruWarehouseOriginalRef && configuredWarehouses[lruWarehouseOriginalRef]) {
+            genieLruCacheWarehouseRefName = lruWarehouseOriginalRef;
+            genieLruCacheWarehouseSource = 'configured';
+          } else if (typeof lruParams.warehouse === 'string' && lruParams.warehouse.startsWith('__REF__')) {
+            genieLruCacheWarehouseRefName = lruParams.warehouse.replace('__REF__', '');
+            genieLruCacheWarehouseSource = 'configured';
+          } else if (typeof lruParams.warehouse === 'object' && lruParams.warehouse !== null) {
+            const wh = lruParams.warehouse as { warehouse_id?: string };
+            // Try to find a matching configured warehouse
+            const matchingKey = findConfiguredWarehouse(wh);
+            if (matchingKey) {
+              genieLruCacheWarehouseRefName = matchingKey;
+              genieLruCacheWarehouseSource = 'configured';
+            } else {
+              genieLruCacheWarehouseId = wh.warehouse_id || '';
+              genieLruCacheWarehouseSource = 'select';
+            }
+          }
+        }
+
+        // Extract semantic cache parameters
+        let genieSemanticCacheEnabled = false;
+        let genieSemanticCacheTtl = 86400;
+        let genieSemanticCacheTtlNeverExpires = false;
+        let genieSemanticCacheSimilarityThreshold = 0.85;
+        let genieSemanticCacheEmbeddingModelSource: ResourceSource = 'configured';
+        let genieSemanticCacheEmbeddingModelRefName = '';
+        let genieSemanticCacheEmbeddingModelManual = 'databricks-gte-large-en';
+        let genieSemanticCacheTableName = 'genie_semantic_cache';
+        let genieSemanticCacheDatabaseSource: ResourceSource = 'configured';
+        let genieSemanticCacheDatabaseRefName = '';
+        let genieSemanticCacheWarehouseSource: ResourceSource = 'configured';
+        let genieSemanticCacheWarehouseRefName = '';
+        let genieSemanticCacheWarehouseId = '';
+
+        if (args.semantic_cache_parameters) {
+          genieSemanticCacheEnabled = true;
+          const semParams = args.semantic_cache_parameters as Record<string, unknown>;
+          if (semParams.time_to_live_seconds === null) {
+            genieSemanticCacheTtlNeverExpires = true;
+          } else {
+            genieSemanticCacheTtl = (semParams.time_to_live_seconds as number) ?? 86400;
+          }
+          genieSemanticCacheSimilarityThreshold = (semParams.similarity_threshold as number) ?? 0.85;
+          genieSemanticCacheTableName = (semParams.table_name as string) ?? 'genie_semantic_cache';
+          
+          // Extract embedding model - first check YAML references, then __REF__ marker, then match against configured LLMs
+          const embeddingModelRefPath = `tools.${key}.function.args.semantic_cache_parameters.embedding_model`;
+          const embeddingModelOriginalRef = findOriginalReferenceForPath(embeddingModelRefPath);
+          
+          if (embeddingModelOriginalRef && configuredLlms[embeddingModelOriginalRef]) {
+            // Found original reference in YAML references - use it
+            genieSemanticCacheEmbeddingModelRefName = embeddingModelOriginalRef;
+            genieSemanticCacheEmbeddingModelSource = 'configured';
+          } else if (typeof semParams.embedding_model === 'string') {
+            if (semParams.embedding_model.startsWith('__REF__')) {
+              genieSemanticCacheEmbeddingModelRefName = semParams.embedding_model.replace('__REF__', '');
+              genieSemanticCacheEmbeddingModelSource = 'configured';
+            } else {
+              // Check if this string matches a configured LLM name directly
+              const matchingLlm = Object.entries(configuredLlms).find(([, llm]) => llm.name === semParams.embedding_model);
+              if (matchingLlm) {
+                genieSemanticCacheEmbeddingModelRefName = matchingLlm[0];
+                genieSemanticCacheEmbeddingModelSource = 'configured';
+              } else {
+                // Use as manual value
+                genieSemanticCacheEmbeddingModelManual = semParams.embedding_model as string;
+                genieSemanticCacheEmbeddingModelSource = 'select'; // 'select' represents manual entry here
+              }
+            }
+          } else if (typeof semParams.embedding_model === 'object' && semParams.embedding_model !== null) {
+            const embModel = semParams.embedding_model as { name?: string };
+            // Try to find a matching configured LLM
+            const matchingKey = findConfiguredLlm(embModel);
+            if (matchingKey) {
+              genieSemanticCacheEmbeddingModelRefName = matchingKey;
+              genieSemanticCacheEmbeddingModelSource = 'configured';
+            } else if (embModel.name) {
+              genieSemanticCacheEmbeddingModelManual = embModel.name;
+              genieSemanticCacheEmbeddingModelSource = 'select';
+            }
+          }
+          
+          // Extract database reference - first check YAML references, then __REF__ marker, then match
+          const databaseRefPath = `tools.${key}.function.args.semantic_cache_parameters.database`;
+          const databaseOriginalRef = findOriginalReferenceForPath(databaseRefPath);
+          
+          if (databaseOriginalRef && configuredDatabases[databaseOriginalRef]) {
+            genieSemanticCacheDatabaseRefName = databaseOriginalRef;
+            genieSemanticCacheDatabaseSource = 'configured';
+          } else if (typeof semParams.database === 'string' && semParams.database.startsWith('__REF__')) {
+            genieSemanticCacheDatabaseRefName = semParams.database.replace('__REF__', '');
+            genieSemanticCacheDatabaseSource = 'configured';
+          } else if (typeof semParams.database === 'object' && semParams.database !== null) {
+            const db = semParams.database as { name?: string };
+            // Try to find a matching configured database
+            const matchingKey = findConfiguredDatabase(db);
+            if (matchingKey) {
+              genieSemanticCacheDatabaseRefName = matchingKey;
+              genieSemanticCacheDatabaseSource = 'configured';
+            }
+          }
+          
+          // Extract warehouse reference - first check YAML references, then __REF__ marker, then match
+          const semWarehouseRefPath = `tools.${key}.function.args.semantic_cache_parameters.warehouse`;
+          const semWarehouseOriginalRef = findOriginalReferenceForPath(semWarehouseRefPath);
+          
+          if (semWarehouseOriginalRef && configuredWarehouses[semWarehouseOriginalRef]) {
+            genieSemanticCacheWarehouseRefName = semWarehouseOriginalRef;
+            genieSemanticCacheWarehouseSource = 'configured';
+          } else if (typeof semParams.warehouse === 'string' && semParams.warehouse.startsWith('__REF__')) {
+            genieSemanticCacheWarehouseRefName = semParams.warehouse.replace('__REF__', '');
+            genieSemanticCacheWarehouseSource = 'configured';
+          } else if (typeof semParams.warehouse === 'object' && semParams.warehouse !== null) {
+            const wh = semParams.warehouse as { warehouse_id?: string };
+            // Try to find a matching configured warehouse
+            const matchingKey = findConfiguredWarehouse(wh);
+            if (matchingKey) {
+              genieSemanticCacheWarehouseRefName = matchingKey;
+              genieSemanticCacheWarehouseSource = 'configured';
+            } else {
+              genieSemanticCacheWarehouseId = wh.warehouse_id || '';
+              genieSemanticCacheWarehouseSource = 'select';
+            }
+          }
+        }
+
         setFormData(prev => ({
           ...prev,
           refName: key, // YAML key (reference name)
@@ -996,6 +1282,28 @@ export default function ToolsSection() {
           genieSpaceId,
           geniePersistConversation: args.persist_conversation as boolean ?? true,
           genieTruncateResults: args.truncate_results as boolean ?? false,
+          // LRU Cache
+          genieLruCacheEnabled,
+          genieLruCacheCapacity,
+          genieLruCacheTtl,
+          genieLruCacheTtlNeverExpires,
+          genieLruCacheWarehouseSource,
+          genieLruCacheWarehouseRefName,
+          genieLruCacheWarehouseId,
+          // Semantic Cache
+          genieSemanticCacheEnabled,
+          genieSemanticCacheTtl,
+          genieSemanticCacheTtlNeverExpires,
+          genieSemanticCacheSimilarityThreshold,
+          genieSemanticCacheEmbeddingModelSource,
+          genieSemanticCacheEmbeddingModelRefName,
+          genieSemanticCacheEmbeddingModelManual,
+          genieSemanticCacheTableName,
+          genieSemanticCacheDatabaseSource,
+          genieSemanticCacheDatabaseRefName,
+          genieSemanticCacheWarehouseSource,
+          genieSemanticCacheWarehouseRefName,
+          genieSemanticCacheWarehouseId,
           retrieverSource,
           retrieverRefName,
           vectorIndex,
@@ -1226,29 +1534,29 @@ export default function ToolsSection() {
                 className="group cursor-pointer"
                 onClick={() => handleEdit(key, tool)}
               >
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center space-x-4">
-                    <div className="w-10 h-10 rounded-lg bg-amber-500/20 flex items-center justify-center">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-4">
+                  <div className="w-10 h-10 rounded-lg bg-amber-500/20 flex items-center justify-center">
                       <Icon className="w-5 h-5 text-amber-400" />
-                    </div>
-                    <div>
+                  </div>
+                  <div>
                       <h3 className="font-medium text-white">{key}</h3>
                       {key !== tool.name && (
                         <p className="text-xs text-slate-500">name: {tool.name}</p>
                       )}
-                      <p className="text-sm text-slate-400 font-mono">
-                        {typeof tool.function === 'object' ? tool.function.name : tool.function}
-                      </p>
-                    </div>
+                    <p className="text-sm text-slate-400 font-mono">
+                      {typeof tool.function === 'object' ? tool.function.name : tool.function}
+                    </p>
                   </div>
-                  <div className="flex items-center space-x-3">
+                </div>
+                <div className="flex items-center space-x-3">
                     {hasHITL(tool) && (
                       <Badge variant="success" title="Human In The Loop Enabled">
                         <UserCheck className="w-3 h-3 mr-1" />
                         HITL
                       </Badge>
                     )}
-                    <Badge variant="warning">{getToolType(tool)}</Badge>
+                  <Badge variant="warning">{getToolType(tool)}</Badge>
                     <Button
                       variant="ghost"
                       size="sm"
@@ -1260,20 +1568,20 @@ export default function ToolsSection() {
                     >
                       <Pencil className="w-4 h-4" />
                     </Button>
-                    <Button
-                      variant="danger"
-                      size="sm"
+                  <Button
+                    variant="danger"
+                    size="sm"
                       onClick={(e: React.MouseEvent) => {
                         e.stopPropagation();
                         safeDelete('Tool', key, () => removeTool(key));
                       }}
                       title="Delete tool"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </Button>
-                  </div>
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </Button>
                 </div>
-              </Card>
+              </div>
+            </Card>
             );
           })}
         </div>
@@ -1310,7 +1618,7 @@ export default function ToolsSection() {
               onChange={(e: ChangeEvent<HTMLSelectElement>) => setFormData({ ...formData, type: e.target.value as 'factory' | 'python' | 'unity_catalog' | 'mcp' })}
             />
           </div>
-          
+
           <Input
             label="Tool Name"
             placeholder="e.g., find_product_by_sku_uc"
@@ -1320,8 +1628,8 @@ export default function ToolsSection() {
               setNameManuallyEdited(true);
             }}
             hint="The name property inside the tool config (can differ from reference name)"
-            required
-          />
+                required
+              />
 
           {/* Factory Tool Configuration */}
           {formData.type === 'factory' && (
@@ -1379,11 +1687,11 @@ export default function ToolsSection() {
                     source={formData.genieSource}
                     onSourceChange={(source) => setFormData({ ...formData, genieSource: source })}
                   >
-                    <GenieSpaceSelect
-                      value={formData.genieSpaceId}
+                  <GenieSpaceSelect
+                    value={formData.genieSpaceId}
                       onChange={(value) => setFormData({ ...formData, genieSpaceId: value, genieRefName: '' })}
-                      required
-                    />
+                    required
+                  />
                   </ResourceSelector>
                   
                   {/* Genie Tool Options */}
@@ -1415,6 +1723,178 @@ export default function ToolsSection() {
                         <p className="text-xs text-slate-500">Truncate large query results to fit within token limits</p>
                       </div>
                     </label>
+                    
+                    {/* LRU Cache */}
+                    <div className="space-y-3">
+                      <label className="flex items-start gap-3 cursor-pointer group">
+                        <input
+                          type="checkbox"
+                          checked={formData.genieLruCacheEnabled}
+                          onChange={(e) => setFormData({ ...formData, genieLruCacheEnabled: e.target.checked })}
+                          className="mt-0.5 w-4 h-4 rounded border-slate-600 bg-slate-800 text-violet-500 focus:ring-violet-500 focus:ring-offset-slate-900"
+                        />
+                        <div>
+                          <span className="text-sm text-slate-200 group-hover:text-white">Enable LRU Cache</span>
+                          <p className="text-xs text-slate-500">Cache query results using Least Recently Used eviction policy</p>
+                        </div>
+                      </label>
+                      
+                      {formData.genieLruCacheEnabled && (
+                        <div className="ml-7 space-y-3 p-3 bg-slate-900/50 rounded-lg border border-slate-700/50">
+                          <div className="grid grid-cols-2 gap-3">
+                            <Input
+                              label="Capacity"
+                              type="number"
+                              value={formData.genieLruCacheCapacity.toString()}
+                              onChange={(e: ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, genieLruCacheCapacity: parseInt(e.target.value) || 1000 })}
+                              hint="Max cached entries"
+                            />
+                            <div className="space-y-2">
+                              <label className="block text-sm font-medium text-slate-300">TTL (seconds)</label>
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="number"
+                                  value={formData.genieLruCacheTtlNeverExpires ? '' : formData.genieLruCacheTtl}
+                                  onChange={(e) => setFormData({ ...formData, genieLruCacheTtl: parseInt(e.target.value) || 86400 })}
+                                  disabled={formData.genieLruCacheTtlNeverExpires}
+                                  className="flex-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500 disabled:opacity-50"
+                                />
+                              </div>
+                              <label className="flex items-center gap-2 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={formData.genieLruCacheTtlNeverExpires}
+                                  onChange={(e) => setFormData({ ...formData, genieLruCacheTtlNeverExpires: e.target.checked })}
+                                  className="w-3 h-3 rounded border-slate-600 bg-slate-800 text-violet-500"
+                                />
+                                <span className="text-xs text-slate-400">Never expires</span>
+                              </label>
+                            </div>
+                          </div>
+                          <ResourceSelector
+                            label="Warehouse"
+                            resourceType="Warehouse"
+                            configuredOptions={configuredWarehouseOptions}
+                            configuredValue={formData.genieLruCacheWarehouseRefName}
+                            onConfiguredChange={(value) => setFormData({ ...formData, genieLruCacheWarehouseRefName: value, genieLruCacheWarehouseId: '' })}
+                            source={formData.genieLruCacheWarehouseSource}
+                            onSourceChange={(source) => setFormData({ ...formData, genieLruCacheWarehouseSource: source })}
+                            hint="SQL warehouse for cache operations"
+                          >
+                            <Input
+                              label="Warehouse ID"
+                              placeholder="Enter warehouse ID"
+                              value={formData.genieLruCacheWarehouseId}
+                              onChange={(e: ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, genieLruCacheWarehouseId: e.target.value, genieLruCacheWarehouseRefName: '' })}
+                            />
+                          </ResourceSelector>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Semantic Cache */}
+                    <div className="space-y-3">
+                      <label className="flex items-start gap-3 cursor-pointer group">
+                        <input
+                          type="checkbox"
+                          checked={formData.genieSemanticCacheEnabled}
+                          onChange={(e) => setFormData({ ...formData, genieSemanticCacheEnabled: e.target.checked })}
+                          className="mt-0.5 w-4 h-4 rounded border-slate-600 bg-slate-800 text-violet-500 focus:ring-violet-500 focus:ring-offset-slate-900"
+                        />
+                        <div>
+                          <span className="text-sm text-slate-200 group-hover:text-white">Enable Semantic Cache</span>
+                          <p className="text-xs text-slate-500">Cache results using vector similarity matching (requires Lakebase database)</p>
+                        </div>
+                      </label>
+                      
+                      {formData.genieSemanticCacheEnabled && (
+                        <div className="ml-7 space-y-3 p-3 bg-slate-900/50 rounded-lg border border-slate-700/50">
+                          <div className="grid grid-cols-2 gap-3">
+                            <Input
+                              label="Similarity Threshold"
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              max="1"
+                              value={formData.genieSemanticCacheSimilarityThreshold.toString()}
+                              onChange={(e: ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, genieSemanticCacheSimilarityThreshold: parseFloat(e.target.value) || 0.85 })}
+                              hint="Min similarity for cache hit (0-1)"
+                            />
+                            <div className="space-y-2">
+                              <label className="block text-sm font-medium text-slate-300">TTL (seconds)</label>
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="number"
+                                  value={formData.genieSemanticCacheTtlNeverExpires ? '' : formData.genieSemanticCacheTtl}
+                                  onChange={(e) => setFormData({ ...formData, genieSemanticCacheTtl: parseInt(e.target.value) || 86400 })}
+                                  disabled={formData.genieSemanticCacheTtlNeverExpires}
+                                  className="flex-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500 disabled:opacity-50"
+                                />
+                              </div>
+                              <label className="flex items-center gap-2 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={formData.genieSemanticCacheTtlNeverExpires}
+                                  onChange={(e) => setFormData({ ...formData, genieSemanticCacheTtlNeverExpires: e.target.checked })}
+                                  className="w-3 h-3 rounded border-slate-600 bg-slate-800 text-violet-500"
+                                />
+                                <span className="text-xs text-slate-400">Never expires</span>
+                              </label>
+                            </div>
+                          </div>
+                          <ResourceSelector
+                            label="Embedding Model"
+                            resourceType="LLM"
+                            configuredOptions={configuredLlmOptions}
+                            configuredValue={formData.genieSemanticCacheEmbeddingModelRefName}
+                            onConfiguredChange={(value) => setFormData({ ...formData, genieSemanticCacheEmbeddingModelRefName: value, genieSemanticCacheEmbeddingModelManual: '' })}
+                            source={formData.genieSemanticCacheEmbeddingModelSource}
+                            onSourceChange={(source) => setFormData({ ...formData, genieSemanticCacheEmbeddingModelSource: source })}
+                            hint="Model for computing embeddings"
+                          >
+                            <Input
+                              label="Model Name"
+                              placeholder="databricks-gte-large-en"
+                              value={formData.genieSemanticCacheEmbeddingModelManual}
+                              onChange={(e: ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, genieSemanticCacheEmbeddingModelManual: e.target.value, genieSemanticCacheEmbeddingModelRefName: '' })}
+                              hint="Enter embedding model name manually"
+                            />
+                          </ResourceSelector>
+                          <Input
+                            label="Cache Table Name"
+                            placeholder="genie_semantic_cache"
+                            value={formData.genieSemanticCacheTableName}
+                            onChange={(e: ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, genieSemanticCacheTableName: e.target.value })}
+                            hint="Table to store cache entries"
+                          />
+                          <Select
+                            label="Database (Lakebase)"
+                            value={formData.genieSemanticCacheDatabaseRefName}
+                            onChange={(e: ChangeEvent<HTMLSelectElement>) => setFormData({ ...formData, genieSemanticCacheDatabaseRefName: e.target.value, genieSemanticCacheDatabaseSource: 'configured' })}
+                            hint="Lakebase database for semantic cache storage"
+                            options={configuredDatabaseOptions}
+                            placeholder="Select configured database..."
+                          />
+                          <ResourceSelector
+                            label="Warehouse"
+                            resourceType="Warehouse"
+                            configuredOptions={configuredWarehouseOptions}
+                            configuredValue={formData.genieSemanticCacheWarehouseRefName}
+                            onConfiguredChange={(value) => setFormData({ ...formData, genieSemanticCacheWarehouseRefName: value, genieSemanticCacheWarehouseId: '' })}
+                            source={formData.genieSemanticCacheWarehouseSource}
+                            onSourceChange={(source) => setFormData({ ...formData, genieSemanticCacheWarehouseSource: source })}
+                            hint="SQL warehouse for cache operations"
+                          >
+                            <Input
+                              label="Warehouse ID"
+                              placeholder="Enter warehouse ID"
+                              value={formData.genieSemanticCacheWarehouseId}
+                              onChange={(e: ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, genieSemanticCacheWarehouseId: e.target.value, genieSemanticCacheWarehouseRefName: '' })}
+                            />
+                          </ResourceSelector>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
               )}
@@ -1439,33 +1919,33 @@ export default function ToolsSection() {
                     hint={formData.retrieverSource === 'configured' ? 'Use a pre-configured retriever from the Retrievers section' : undefined}
                   >
                     <div className="space-y-4">
-                      <VectorSearchEndpointSelect
-                        label="Vector Search Endpoint"
-                        value={formData.vectorEndpoint}
+                  <VectorSearchEndpointSelect
+                    label="Vector Search Endpoint"
+                    value={formData.vectorEndpoint}
                         onChange={(value) => setFormData({ ...formData, vectorEndpoint: value, vectorIndex: '', retrieverRefName: '' })}
-                        required
-                      />
-                      <div className="space-y-2">
-                        <div className="flex items-center justify-between">
-                          <label className="block text-sm font-medium text-slate-300">Vector Index</label>
-                          {formData.vectorEndpoint && (
-                            <button
-                              type="button"
-                              onClick={() => refetchIndexes()}
-                              className="text-xs text-slate-400 hover:text-white flex items-center space-x-1"
-                              disabled={vectorIndexesLoading}
-                            >
-                              <RefreshCw className={`w-3 h-3 ${vectorIndexesLoading ? 'animate-spin' : ''}`} />
-                              <span>Refresh</span>
-                            </button>
-                          )}
-                        </div>
-                        <Select
-                          options={vectorIndexOptions}
-                          value={formData.vectorIndex}
+                    required
+                  />
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <label className="block text-sm font-medium text-slate-300">Vector Index</label>
+                      {formData.vectorEndpoint && (
+                        <button
+                          type="button"
+                          onClick={() => refetchIndexes()}
+                          className="text-xs text-slate-400 hover:text-white flex items-center space-x-1"
+                          disabled={vectorIndexesLoading}
+                        >
+                          <RefreshCw className={`w-3 h-3 ${vectorIndexesLoading ? 'animate-spin' : ''}`} />
+                          <span>Refresh</span>
+                        </button>
+                      )}
+                    </div>
+                    <Select
+                      options={vectorIndexOptions}
+                      value={formData.vectorIndex}
                           onChange={(e: ChangeEvent<HTMLSelectElement>) => setFormData({ ...formData, vectorIndex: e.target.value })}
-                          disabled={!formData.vectorEndpoint || vectorIndexesLoading}
-                          required
+                      disabled={!formData.vectorEndpoint || vectorIndexesLoading}
+                      required
                         />
                       </div>
                     </div>
@@ -1625,9 +2105,9 @@ export default function ToolsSection() {
 
               {/* Custom Python Function Path */}
               {formData.functionName === 'custom' && (
-                <Input
+            <Input
                   label="Custom Python Function Path"
-                  placeholder="e.g., my_package.tools.my_function"
+              placeholder="e.g., my_package.tools.my_function"
                   value={formData.customFunctionName}
                   onChange={(e: ChangeEvent<HTMLInputElement>) => {
                     const funcName = e.target.value;
@@ -1642,8 +2122,8 @@ export default function ToolsSection() {
                     });
                   }}
                   hint="Fully qualified path to a Python function decorated with @tool"
-                  required
-                />
+              required
+            />
               )}
             </div>
           )}
@@ -1744,41 +2224,41 @@ export default function ToolsSection() {
                     onSourceChange={(source) => setFormData({ ...formData, schemaSource: source })}
                   >
                     <div className="grid grid-cols-2 gap-4">
-                      <CatalogSelect
-                        label="Catalog"
-                        value={formData.ucCatalog}
+              <CatalogSelect
+                label="Catalog"
+                value={formData.ucCatalog}
                         onChange={(value) => setFormData({ ...formData, ucCatalog: value, ucSchema: '', ucFunction: '', schemaRefName: '' })}
-                        required
-                      />
-                      <SchemaSelect
-                        label="Schema"
-                        value={formData.ucSchema}
+                required
+              />
+              <SchemaSelect
+                label="Schema"
+                value={formData.ucSchema}
                         onChange={(value) => setFormData({ ...formData, ucSchema: value, ucFunction: '', schemaRefName: '' })}
-                        catalog={formData.ucCatalog || null}
-                        required
-                      />
+                catalog={formData.ucCatalog || null}
+                required
+              />
                     </div>
                   </ResourceSelector>
 
                   {/* Function Selection from Schema */}
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <label className="block text-sm font-medium text-slate-300">Function</label>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="block text-sm font-medium text-slate-300">Function</label>
                       {(formData.ucCatalog && formData.ucSchema) || formData.schemaRefName ? (
-                        <button
-                          type="button"
-                          onClick={() => refetchFunctions()}
-                          className="text-xs text-slate-400 hover:text-white flex items-center space-x-1"
-                          disabled={ucFunctionsLoading}
-                        >
-                          <RefreshCw className={`w-3 h-3 ${ucFunctionsLoading ? 'animate-spin' : ''}`} />
-                          <span>Refresh</span>
-                        </button>
+                    <button
+                      type="button"
+                      onClick={() => refetchFunctions()}
+                      className="text-xs text-slate-400 hover:text-white flex items-center space-x-1"
+                      disabled={ucFunctionsLoading}
+                    >
+                      <RefreshCw className={`w-3 h-3 ${ucFunctionsLoading ? 'animate-spin' : ''}`} />
+                      <span>Refresh</span>
+                    </button>
                       ) : null}
-                    </div>
-                    <Select
-                      options={ucFunctionOptions}
-                      value={formData.ucFunction}
+                </div>
+                <Select
+                  options={ucFunctionOptions}
+                  value={formData.ucFunction}
                       onChange={(e: ChangeEvent<HTMLSelectElement>) => {
                         const funcFullName = e.target.value;
                         const generatedName = generateToolName(funcFullName);
@@ -1793,17 +2273,17 @@ export default function ToolsSection() {
                         });
                       }}
                       disabled={(!formData.ucCatalog || !formData.ucSchema) && !formData.schemaRefName || ucFunctionsLoading}
-                      required
-                    />
-                    {ucFunctionsLoading && (
-                      <p className="text-xs text-slate-500">Loading functions...</p>
-                    )}
+                  required
+                />
+                {ucFunctionsLoading && (
+                  <p className="text-xs text-slate-500">Loading functions...</p>
+                )}
                     {!formData.ucCatalog && !formData.ucSchema && !formData.schemaRefName && (
                       <p className="text-xs text-slate-500">Select a schema first to browse functions</p>
-                    )}
-                  </div>
-                </div>
-              )}
+                )}
+              </div>
+            </div>
+          )}
 
               {/* Partial Arguments Section */}
               <div className="space-y-3 pt-3 border-t border-slate-700">
@@ -2144,14 +2624,14 @@ export default function ToolsSection() {
               {/* Source-specific configuration */}
               <div className="p-4 bg-slate-800/50 rounded-lg border border-slate-700 space-y-4">
                 {mcpForm.sourceType === 'url' && (
-                  <Input
+            <Input
                     label="MCP Server URL"
                     placeholder="https://your-workspace.databricks.net/api/2.0/mcp/..."
                     value={mcpForm.url}
                     onChange={(e: ChangeEvent<HTMLInputElement>) => setMcpForm({ ...mcpForm, url: e.target.value })}
                     hint="Full URL to the MCP server endpoint"
-                    required
-                  />
+              required
+            />
                 )}
 
                 {mcpForm.sourceType === 'genie' && (

@@ -118,6 +118,23 @@ export interface WarehouseModel {
   warehouse_id: string;
 }
 
+// Genie Caching Models
+export interface GenieLRUCacheParametersModel {
+  capacity?: number;  // Default: 1000
+  time_to_live_seconds?: number | null;  // Default: 86400 (1 day), null = never expires
+  warehouse: WarehouseModel | string;  // Can be inline or reference
+}
+
+export interface GenieSemanticCacheParametersModel {
+  time_to_live_seconds?: number | null;  // Default: 86400 (1 day), null = never expires
+  similarity_threshold?: number;  // Default: 0.85
+  embedding_model?: string | LLMModel;  // Default: "databricks-gte-large-en"
+  embedding_dims?: number | null;  // Auto-detected if null
+  database: DatabaseModel | string;  // Can be inline or reference
+  warehouse: WarehouseModel | string;  // Can be inline or reference
+  table_name?: string;  // Default: "genie_semantic_cache"
+}
+
 export interface DatabaseModel {
   on_behalf_of_user?: boolean;
   name: string;

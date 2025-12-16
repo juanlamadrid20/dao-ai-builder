@@ -601,14 +601,35 @@ function formatOrchestration(orchestration: OrchestrationModel, definedLLMs: Rec
     let supervisorToolsValue: string[] | undefined;
     if (orchestration.supervisor.tools && orchestration.supervisor.tools.length > 0) {
       supervisorToolsValue = orchestration.supervisor.tools.map((tool) => {
-        // Tools are stored as ToolModel objects - find the key by matching the name
+        // Tools are stored as ToolModel objects - find the key by matching
         const toolName = typeof tool === 'string' ? tool : tool.name;
-        // Find the key in definedTools that matches this tool's name
-        const matchedEntry = Object.entries(definedTools).find(
+        
+        // Strategy 1: Check if toolName is already a valid key in definedTools
+        if (definedTools[toolName]) {
+          return createReference(toolName);
+        }
+        
+        // Strategy 2: Find the key in definedTools that matches this tool's name
+        const matchedByName = Object.entries(definedTools).find(
           ([, t]) => t.name === toolName
         );
-        const toolKey = matchedEntry ? matchedEntry[0] : toolName;
-        return createReference(toolKey);
+        if (matchedByName) {
+          return createReference(matchedByName[0]);
+        }
+        
+        // Strategy 3: Find by deep comparison of the full tool object
+        const toolObj = typeof tool === 'object' ? tool : null;
+        if (toolObj) {
+          const matchedByObject = Object.entries(definedTools).find(
+            ([, t]) => JSON.stringify(t) === JSON.stringify(toolObj)
+          );
+          if (matchedByObject) {
+            return createReference(matchedByObject[0]);
+          }
+        }
+        
+        // Fallback: use the toolName
+        return createReference(toolName);
       });
     }
     
@@ -722,18 +743,12 @@ function formatToolFunction(func: ToolFunctionModel, toolKey?: string): any {
   // Add type-specific fields
   if (func.type === 'factory' && 'args' in func) {
     if (func.args && Object.keys(func.args).length > 0) {
-      // Check each arg for original references
-      const processedArgs: Record<string, any> = {};
-      for (const [argKey, argValue] of Object.entries(func.args)) {
-        // Check if this arg was originally a reference
-        const argRef = toolKey ? findOriginalReference(`tools.${toolKey}.function.args.${argKey}`, argValue) : null;
-        if (argRef) {
-          processedArgs[argKey] = createReference(argRef);
-        } else {
-          processedArgs[argKey] = argValue;
-        }
-      }
-      result.args = processedArgs;
+      // Recursively process args to find all references (including nested ones)
+      // This handles cases like:
+      //   lru_cache_parameters:
+      //     warehouse: *shared_endpoint_warehouse
+      const basePath = toolKey ? `tools.${toolKey}.function.args` : 'function.args';
+      result.args = processObjectWithReferences(func.args, basePath, {});
     }
   }
 
@@ -1485,46 +1500,101 @@ export function generateYAML(config: AppConfig): string {
         }
       }
       
-      // Format tools as references - tools should be referenced using *tool_name
+      // Format tools as references - tools should be referenced using *tool_key (YAML key, not name)
       let toolsValue: string[] | undefined;
       if (agent.tools && agent.tools.length > 0) {
         toolsValue = agent.tools.map((tool, idx) => {
           // First check if this was originally a reference in imported YAML
           const originalRef = findOriginalReference(`agents.${key}.tools.${idx}`, tool);
-          if (originalRef) {
+          if (originalRef && definedTools[originalRef]) {
             return createReference(originalRef);
           }
           
-          // Tools are stored as ToolModel objects - find the key by matching the name
+          // Tools are stored as ToolModel objects - find the key by matching
+          const toolObj = typeof tool === 'object' ? tool : null;
           const toolName = typeof tool === 'string' ? tool : tool.name;
-          // Find the key in definedTools that matches this tool's name
-          const matchedEntry = Object.entries(definedTools).find(
+          
+          // Strategy 1: Check if toolName is already a valid key in definedTools
+          if (definedTools[toolName]) {
+            return createReference(toolName);
+          }
+          
+          // Strategy 2: Find by deep comparison of the full tool object (most accurate)
+          if (toolObj) {
+            const matchedByObject = Object.entries(definedTools).find(
+              ([, t]) => JSON.stringify(t) === JSON.stringify(toolObj)
+            );
+            if (matchedByObject) {
+              return createReference(matchedByObject[0]);
+            }
+          }
+          
+          // Strategy 3: Find the key in definedTools that matches this tool's name
+          const matchedByName = Object.entries(definedTools).find(
             ([, t]) => t.name === toolName
           );
-          const toolKey = matchedEntry ? matchedEntry[0] : toolName;
-          return createReference(toolKey);
-        });
+          if (matchedByName) {
+            return createReference(matchedByName[0]);
+          }
+          
+          // Strategy 4: Partial object match - check if tool's function matches
+          if (toolObj && toolObj.function) {
+            const matchedByFunction = Object.entries(definedTools).find(
+              ([, t]) => t.function && JSON.stringify(t.function) === JSON.stringify(toolObj.function)
+            );
+            if (matchedByFunction) {
+              return createReference(matchedByFunction[0]);
+            }
+          }
+          
+          // Fallback: The tool doesn't exist in definedTools - skip this reference
+          // This happens when a tool was deleted but the agent still references it
+          console.warn(`Could not find tool key for tool with name "${toolName}". Tool may have been deleted.`);
+          return null; // Return null to filter out deleted tools
+        }).filter((ref): ref is string => ref !== null);
       }
       
-      // Format guardrails as references - guardrails should be referenced using *guardrail_name
+      // Format guardrails as references - guardrails should be referenced using *guardrail_key (YAML key)
       let guardrailsValue: string[] | undefined;
       if (agent.guardrails && agent.guardrails.length > 0) {
         guardrailsValue = agent.guardrails.map((guardrail, idx) => {
           // First check if this was originally a reference in imported YAML
           const originalRef = findOriginalReference(`agents.${key}.guardrails.${idx}`, guardrail);
-          if (originalRef) {
+          if (originalRef && definedGuardrails[originalRef]) {
             return createReference(originalRef);
           }
           
-          // Guardrails are stored as GuardrailModel objects - find the key by matching the name
+          // Guardrails are stored as GuardrailModel objects - find the key by matching
+          const guardrailObj = typeof guardrail === 'object' ? guardrail : null;
           const guardrailName = typeof guardrail === 'string' ? guardrail : guardrail.name;
-          // Find the key in definedGuardrails that matches this guardrail's name
-          const matchedEntry = Object.entries(definedGuardrails).find(
+          
+          // Strategy 1: Check if guardrailName is already a valid key in definedGuardrails
+          if (definedGuardrails[guardrailName]) {
+            return createReference(guardrailName);
+          }
+          
+          // Strategy 2: Find by deep comparison (most accurate)
+          if (guardrailObj) {
+            const matchedByObject = Object.entries(definedGuardrails).find(
+              ([, g]) => JSON.stringify(g) === JSON.stringify(guardrailObj)
+            );
+            if (matchedByObject) {
+              return createReference(matchedByObject[0]);
+            }
+          }
+          
+          // Strategy 3: Find the key in definedGuardrails that matches this guardrail's name
+          const matchedByName = Object.entries(definedGuardrails).find(
             ([, g]) => g.name === guardrailName
           );
-          const guardrailKey = matchedEntry ? matchedEntry[0] : guardrailName;
-          return createReference(guardrailKey);
-        });
+          if (matchedByName) {
+            return createReference(matchedByName[0]);
+          }
+          
+          // Fallback: The guardrail doesn't exist in definedGuardrails - skip this reference
+          console.warn(`Could not find guardrail key for guardrail with name "${guardrailName}". Guardrail may have been deleted.`);
+          return null;
+        }).filter((ref): ref is string => ref !== null);
       }
       
       yamlConfig.agents[key] = {
@@ -1541,25 +1611,59 @@ export function generateYAML(config: AppConfig): string {
 
   // App configuration - only include if it has meaningful content
   if (config.app && config.app.name && config.app.registered_model?.name) {
-    // Format app.agents as references to defined agents
+    // Format app.agents as references to defined agents - use YAML key (not name)
     const definedAgents = config.agents || {};
     let appAgentsValue: string[] | undefined;
     if (config.app.agents && config.app.agents.length > 0) {
       appAgentsValue = config.app.agents.map((agent, idx) => {
         // First check if this was originally a reference in imported YAML
         const originalRef = findOriginalReference(`app.agents.${idx}`, agent);
-        if (originalRef) {
+        if (originalRef && definedAgents[originalRef]) {
           return createReference(originalRef);
         }
         
-        // Find the agent key by matching the name
+        // Find the agent key by matching
+        const agentObj = typeof agent === 'object' ? agent : null;
         const agentName = typeof agent === 'string' ? agent : agent.name;
-        const matchedEntry = Object.entries(definedAgents).find(
+        
+        // Strategy 1: Check if agentName is already a valid key in definedAgents
+        if (definedAgents[agentName]) {
+          return createReference(agentName);
+        }
+        
+        // Strategy 2: Find by deep comparison of the full agent object (most accurate)
+        if (agentObj) {
+          const matchedByObject = Object.entries(definedAgents).find(
+            ([, a]) => JSON.stringify(a) === JSON.stringify(agentObj)
+          );
+          if (matchedByObject) {
+            return createReference(matchedByObject[0]);
+          }
+        }
+        
+        // Strategy 3: Find the key in definedAgents that matches this agent's name
+        const matchedByName = Object.entries(definedAgents).find(
           ([, a]) => a.name === agentName
         );
-        const agentKey = matchedEntry ? matchedEntry[0] : agentName;
-        return createReference(agentKey);
-      });
+        if (matchedByName) {
+          return createReference(matchedByName[0]);
+        }
+        
+        // Strategy 4: Partial match - check if agent's model and description match
+        if (agentObj && agentObj.model) {
+          const matchedByModel = Object.entries(definedAgents).find(
+            ([, a]) => a.model && a.name === agentName && 
+              JSON.stringify(a.model) === JSON.stringify(agentObj.model)
+          );
+          if (matchedByModel) {
+            return createReference(matchedByModel[0]);
+          }
+        }
+        
+        // Fallback: The agent doesn't exist in definedAgents - skip this reference
+        console.warn(`Could not find agent key for agent with name "${agentName}". Agent may have been deleted.`);
+        return null; // Return null to filter out deleted agents
+      }).filter((ref): ref is string => ref !== null);
     }
     
     // Format registered_model with schema reference
