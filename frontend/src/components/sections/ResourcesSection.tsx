@@ -3201,8 +3201,11 @@ interface DatabaseFormData {
   refName: string;
   name: string;
   type: 'postgres' | 'lakebase';
-  instanceSource: 'existing' | 'new';
+  instanceSource: 'existing' | 'manual';
   instance_name: string;
+  hostSource: CredentialSource;  // PostgreSQL hostname source
+  host: string;  // PostgreSQL hostname (manual)
+  hostVariable: string;  // PostgreSQL hostname (variable)
   description: string;
   capacity: 'CU_1' | 'CU_2';
   max_pool_size: number;
@@ -3233,6 +3236,9 @@ const defaultDatabaseForm: DatabaseFormData = {
   type: 'lakebase',
   instanceSource: 'existing',
   instance_name: '',
+  hostSource: 'manual',
+  host: '',
+  hostVariable: '',
   description: '',
   capacity: 'CU_2',
   max_pool_size: 10,
@@ -3260,11 +3266,6 @@ const defaultDatabaseForm: DatabaseFormData = {
 const databaseTypeOptions = [
   { value: 'lakebase', label: 'Lakebase (Databricks-managed PostgreSQL)' },
   { value: 'postgres', label: 'PostgreSQL (External)' },
-];
-
-const capacityOptions = [
-  { value: 'CU_1', label: 'CU_1 (Small)' },
-  { value: 'CU_2', label: 'CU_2 (Large)' },
 ];
 
 const authMethodOptions = [
@@ -3430,6 +3431,9 @@ function DatabasesPanel({ showForm, setShowForm, editingKey, setEditingKey, onCl
         type: db.type || 'lakebase',
         instanceSource: 'existing',
         instance_name: db.instance_name || '',
+        hostSource: isVariableRef(db.host) ? 'variable' : 'manual',
+        host: isVariableRef(db.host) ? '' : safeString(db.host),
+        hostVariable: getVarSlice(db.host),
         description: db.description || '',
         capacity: db.capacity || 'CU_2',
         max_pool_size: db.max_pool_size || 10,
@@ -3473,12 +3477,14 @@ function DatabasesPanel({ showForm, setShowForm, editingKey, setEditingKey, onCl
     const db: DatabaseModel = {
       name: formData.name,
       type: formData.type,
-      instance_name: formData.instance_name || undefined,
+      instance_name: formData.type === 'lakebase' ? (formData.instance_name || undefined) : undefined,
+      host: formData.type === 'postgres' ? (getCredentialValue(formData.hostSource, formData.host, formData.hostVariable) || undefined) : undefined,
       description: formData.description || undefined,
       capacity: formData.capacity,
       max_pool_size: formData.max_pool_size,
       timeout_seconds: formData.timeout_seconds,
-      on_behalf_of_user: formData.on_behalf_of_user || undefined,
+      // OBO only supported for Lakebase
+      on_behalf_of_user: formData.type === 'lakebase' ? (formData.on_behalf_of_user || undefined) : undefined,
     };
     
     if (formData.authMethod === 'service_principal') {
@@ -3588,38 +3594,46 @@ function DatabasesPanel({ showForm, setShowForm, editingKey, setEditingKey, onCl
           <Select
             label="Database Type"
             value={formData.type}
-            onChange={(e: ChangeEvent<HTMLSelectElement>) => setFormData({ ...formData, type: e.target.value as 'postgres' | 'lakebase' })}
+            onChange={(e: ChangeEvent<HTMLSelectElement>) => {
+              const newType = e.target.value as 'postgres' | 'lakebase';
+              setFormData({ 
+                ...formData, 
+                type: newType,
+                // Clear OBO when switching to PostgreSQL (not supported)
+                on_behalf_of_user: newType === 'postgres' ? false : formData.on_behalf_of_user
+              });
+            }}
             options={databaseTypeOptions}
             hint={formData.type === 'lakebase' ? 'Databricks-managed Lakebase supports ambient/OBO authentication' : 'External PostgreSQL requires explicit credentials'}
           />
           
-          {/* Lakebase Instance Selection */}
-          <div className="space-y-3 p-3 bg-slate-900/50 rounded border border-slate-600">
-            <div className="flex items-center justify-between">
-              <p className="text-sm text-slate-300 font-medium flex items-center">
-                <CloudCog className="w-4 h-4 mr-2 text-emerald-400" />
-                Lakebase Instance
-              </p>
-              <div className="flex items-center space-x-2">
-                <button
-                  type="button"
-                  onClick={() => setFormData({ ...formData, instanceSource: 'existing' })}
-                  className={`px-2 py-1 text-xs rounded ${formData.instanceSource === 'existing' ? 'bg-emerald-500/30 text-emerald-300' : 'bg-slate-700 text-slate-400'}`}
-                >
-                  Use Existing
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setFormData({ ...formData, instanceSource: 'new' })}
-                  className={`px-2 py-1 text-xs rounded ${formData.instanceSource === 'new' ? 'bg-emerald-500/30 text-emerald-300' : 'bg-slate-700 text-slate-400'}`}
-                >
-                  Create New
-                </button>
+          {/* Lakebase Instance Selection - Only for Lakebase type */}
+          {formData.type === 'lakebase' && (
+            <div className="space-y-3 p-3 bg-slate-900/50 rounded border border-slate-600">
+              <div className="flex items-center justify-between">
+                <p className="text-sm text-slate-300 font-medium flex items-center">
+                  <CloudCog className="w-4 h-4 mr-2 text-emerald-400" />
+                  Lakebase Instance
+                </p>
+                <div className="flex items-center space-x-2">
+                  <button
+                    type="button"
+                    onClick={() => setFormData({ ...formData, instanceSource: 'existing' })}
+                    className={`px-2 py-1 text-xs rounded ${formData.instanceSource === 'existing' ? 'bg-emerald-500/30 text-emerald-300' : 'bg-slate-700 text-slate-400'}`}
+                  >
+                    Use Existing
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setFormData({ ...formData, instanceSource: 'manual' })}
+                    className={`px-2 py-1 text-xs rounded ${formData.instanceSource === 'manual' ? 'bg-emerald-500/30 text-emerald-300' : 'bg-slate-700 text-slate-400'}`}
+                  >
+                    Manual
+                  </button>
+                </div>
               </div>
-            </div>
-            
-            {formData.instanceSource === 'existing' ? (
-              <div className="space-y-2">
+              
+              {formData.instanceSource === 'existing' ? (
                 <div className="flex items-center space-x-2">
                   <div className="flex-1">
                     <label className="block text-sm font-medium text-slate-300 mb-1.5">Select Lakebase Instance</label>
@@ -3651,17 +3665,9 @@ function DatabasesPanel({ showForm, setShowForm, editingKey, setEditingKey, onCl
                     )}
                   </Button>
                 </div>
-                <p className="text-xs text-slate-500">Or enter instance name manually:</p>
+              ) : (
                 <Input
-                  value={formData.instance_name}
-                  onChange={(e: ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, instance_name: e.target.value })}
-                  placeholder="my-lakebase-instance"
-                />
-              </div>
-            ) : (
-              <div className="space-y-3">
-                <Input
-                  label="New Instance Name"
+                  label="Instance Name"
                   value={formData.instance_name}
                   onChange={(e: ChangeEvent<HTMLInputElement>) => {
                     const instanceName = e.target.value;
@@ -3672,22 +3678,29 @@ function DatabasesPanel({ showForm, setShowForm, editingKey, setEditingKey, onCl
                       refName: editingKey ? formData.refName : generateRefName(instanceName),
                     });
                   }}
-                  placeholder="my-new-lakebase"
-                  hint="Name for the new Lakebase instance to create"
+                  placeholder="my-lakebase-instance"
+                  hint="Enter the Lakebase instance name directly"
                 />
-                <Select
-                  label="Capacity"
-                  value={formData.capacity}
-                  onChange={(e: ChangeEvent<HTMLSelectElement>) => setFormData({ ...formData, capacity: e.target.value as 'CU_1' | 'CU_2' })}
-                  options={capacityOptions}
-                  hint="CU_1 = Small (dev/test), CU_2 = Large (production)"
-                />
-                <p className="text-xs text-amber-400">
-                  Note: Instance will be created when the agent is deployed with this configuration.
-                </p>
-              </div>
-            )}
-          </div>
+              )}
+            </div>
+          )}
+          
+          {/* PostgreSQL Host - Only for Postgres type */}
+          {formData.type === 'postgres' && (
+            <CredentialInput
+              label="PostgreSQL Host"
+              source={formData.hostSource}
+              onSourceChange={(s) => setFormData({ ...formData, hostSource: s })}
+              manualValue={formData.host}
+              onManualChange={(v) => setFormData({ ...formData, host: v })}
+              variableValue={formData.hostVariable}
+              onVariableChange={(v) => setFormData({ ...formData, hostVariable: v })}
+              placeholder="postgres.example.com:5432"
+              hint="Hostname and port for your PostgreSQL server"
+              variableNames={variableNames}
+              variables={variables}
+            />
+          )}
           
           <Input
             label="Display Name"
@@ -3718,13 +3731,44 @@ function DatabasesPanel({ showForm, setShowForm, editingKey, setEditingKey, onCl
             />
           </div>
           
-          <Select
-            label="Authentication Method"
-            value={formData.authMethod}
-            onChange={(e: ChangeEvent<HTMLSelectElement>) => setFormData({ ...formData, authMethod: e.target.value as 'oauth' | 'user' | 'service_principal' })}
-            options={authMethodOptions}
-            hint={formData.type === 'postgres' ? 'PostgreSQL requires explicit authentication' : 'Lakebase supports ambient/OBO authentication'}
-          />
+          {formData.type === 'lakebase' ? (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-sm font-medium text-slate-300">Authentication Method</label>
+                <label className="flex items-center space-x-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={formData.on_behalf_of_user}
+                    onChange={(e) => setFormData({ ...formData, on_behalf_of_user: e.target.checked })}
+                    className="rounded border-slate-600 bg-slate-800 text-blue-500 focus:ring-blue-500"
+                  />
+                  <UserCheck className="w-4 h-4 text-blue-400" />
+                  <span className="text-sm text-slate-300">On Behalf of User</span>
+                </label>
+              </div>
+              <Select
+                value={formData.authMethod}
+                onChange={(e: ChangeEvent<HTMLSelectElement>) => setFormData({ ...formData, authMethod: e.target.value as 'oauth' | 'user' | 'service_principal' })}
+                options={authMethodOptions}
+                hint="Lakebase supports ambient/OBO authentication"
+                disabled={formData.on_behalf_of_user}
+              />
+              {formData.on_behalf_of_user && (
+                <div className="p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg text-blue-300 text-xs">
+                  When enabled, the resource will use the calling user's credentials for authentication.
+                  Other authentication options are disabled.
+                </div>
+              )}
+            </div>
+          ) : (
+            <Select
+              label="Authentication Method"
+              value={formData.authMethod}
+              onChange={(e: ChangeEvent<HTMLSelectElement>) => setFormData({ ...formData, authMethod: e.target.value as 'oauth' | 'user' | 'service_principal' })}
+              options={authMethodOptions}
+              hint="PostgreSQL requires explicit authentication"
+            />
+          )}
           
           {formData.type === 'postgres' && (
             <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg">
@@ -3734,7 +3778,7 @@ function DatabasesPanel({ showForm, setShowForm, editingKey, setEditingKey, onCl
             </div>
           )}
           
-          {formData.authMethod === 'service_principal' ? (
+          {!formData.on_behalf_of_user && formData.authMethod === 'service_principal' ? (
             <div className="space-y-4 p-3 bg-slate-900/50 rounded border border-slate-600">
               <p className="text-xs text-slate-400 font-medium">Select Configured Service Principal</p>
               
@@ -3758,7 +3802,7 @@ function DatabasesPanel({ showForm, setShowForm, editingKey, setEditingKey, onCl
                 </div>
               )}
             </div>
-          ) : formData.authMethod === 'oauth' ? (
+          ) : !formData.on_behalf_of_user && formData.authMethod === 'oauth' ? (
             <div className="space-y-4 p-3 bg-slate-900/50 rounded border border-slate-600">
               <p className="text-xs text-slate-400 font-medium">OAuth2 / Service Principal Credentials</p>
               
@@ -3803,7 +3847,7 @@ function DatabasesPanel({ showForm, setShowForm, editingKey, setEditingKey, onCl
                 variables={variables}
               />
             </div>
-          ) : (
+          ) : !formData.on_behalf_of_user && formData.authMethod === 'user' ? (
             <div className="space-y-4 p-3 bg-slate-900/50 rounded border border-slate-600">
               <p className="text-xs text-slate-400 font-medium">User/Password Credentials</p>
               
@@ -3834,18 +3878,7 @@ function DatabasesPanel({ showForm, setShowForm, editingKey, setEditingKey, onCl
                 variables={variables}
               />
             </div>
-          )}
-          
-          <label className="flex items-center space-x-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={formData.on_behalf_of_user}
-              onChange={(e) => setFormData({ ...formData, on_behalf_of_user: e.target.checked })}
-              className="rounded border-slate-600 bg-slate-800 text-blue-500 focus:ring-blue-500"
-            />
-            <UserCheck className="w-4 h-4 text-blue-400" />
-            <span className="text-sm text-slate-300">On Behalf of User</span>
-          </label>
+          ) : null}
           
           {/* Duplicate reference name warning */}
           {formData.refName && isRefNameDuplicate(formData.refName, config, editingKey) && (
@@ -3856,7 +3889,17 @@ function DatabasesPanel({ showForm, setShowForm, editingKey, setEditingKey, onCl
           
           <div className="flex justify-end space-x-3">
             <Button variant="secondary" onClick={onClose}>Cancel</Button>
-            <Button onClick={handleSave} disabled={!formData.refName || !formData.name || isRefNameDuplicate(formData.refName, config, editingKey)}>
+            <Button 
+              onClick={handleSave} 
+              disabled={
+                !formData.refName || 
+                !formData.name || 
+                (formData.type === 'lakebase' && !formData.instance_name) ||
+                (formData.type === 'postgres' && formData.hostSource === 'manual' && !formData.host) ||
+                (formData.type === 'postgres' && formData.hostSource === 'variable' && !formData.hostVariable) ||
+                isRefNameDuplicate(formData.refName, config, editingKey)
+              }
+            >
               {editingKey ? 'Update' : 'Add'}
             </Button>
           </div>

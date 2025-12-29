@@ -119,6 +119,12 @@ const FACTORY_TOOLS = [
     icon: Search,
   },
   { 
+    value: 'dao_ai.tools.create_search_tool', 
+    label: 'Web Search Tool',
+    description: 'Search the web using DuckDuckGo',
+    icon: Search,
+  },
+  { 
     value: 'dao_ai.tools.create_send_slack_message_tool', 
     label: 'Slack Message Tool',
     description: 'Send messages to Slack channels',
@@ -339,6 +345,11 @@ export default function ToolsSection() {
     genieSemanticCacheTtl: 86400, // 1 day in seconds
     genieSemanticCacheTtlNeverExpires: false,
     genieSemanticCacheSimilarityThreshold: 0.85,
+    genieSemanticCacheContextSimilarityThreshold: 0.80, // Conversation-aware: context similarity
+    genieSemanticCacheQuestionWeight: 0.6, // Conversation-aware: question weight
+    genieSemanticCacheContextWeight: 0.4, // Conversation-aware: context weight (computed as 1 - question_weight)
+    genieSemanticCacheContextWindowSize: 3, // Conversation-aware: number of previous turns
+    genieSemanticCacheMaxContextTokens: 2000, // Conversation-aware: max context length
     genieSemanticCacheEmbeddingModelSource: 'configured' as ResourceSource,
     genieSemanticCacheEmbeddingModelRefName: '',
     genieSemanticCacheEmbeddingModelManual: 'databricks-gte-large-en',
@@ -713,6 +724,11 @@ export default function ToolsSection() {
           const semanticCacheParams: Record<string, unknown> = {
             time_to_live_seconds: formData.genieSemanticCacheTtlNeverExpires ? null : formData.genieSemanticCacheTtl,
             similarity_threshold: formData.genieSemanticCacheSimilarityThreshold,
+            context_similarity_threshold: formData.genieSemanticCacheContextSimilarityThreshold,
+            question_weight: formData.genieSemanticCacheQuestionWeight,
+            context_weight: formData.genieSemanticCacheContextWeight,
+            context_window_size: formData.genieSemanticCacheContextWindowSize,
+            max_context_tokens: formData.genieSemanticCacheMaxContextTokens,
             table_name: formData.genieSemanticCacheTableName,
           };
           // Add embedding model - configured LLM reference or manual string
@@ -915,6 +931,11 @@ export default function ToolsSection() {
       genieSemanticCacheTtl: 86400,
       genieSemanticCacheTtlNeverExpires: false,
       genieSemanticCacheSimilarityThreshold: 0.85,
+      genieSemanticCacheContextSimilarityThreshold: 0.80,
+      genieSemanticCacheQuestionWeight: 0.6,
+      genieSemanticCacheContextWeight: 0.4,
+      genieSemanticCacheContextWindowSize: 3,
+      genieSemanticCacheMaxContextTokens: 2000,
       genieSemanticCacheEmbeddingModelSource: 'configured',
       genieSemanticCacheEmbeddingModelRefName: '',
       genieSemanticCacheEmbeddingModelManual: 'databricks-gte-large-en',
@@ -1147,6 +1168,11 @@ export default function ToolsSection() {
         let genieSemanticCacheTtl = 86400;
         let genieSemanticCacheTtlNeverExpires = false;
         let genieSemanticCacheSimilarityThreshold = 0.85;
+        let genieSemanticCacheContextSimilarityThreshold = 0.80;
+        let genieSemanticCacheQuestionWeight = 0.6;
+        let genieSemanticCacheContextWeight = 0.4;
+        let genieSemanticCacheContextWindowSize = 3;
+        let genieSemanticCacheMaxContextTokens = 2000;
         let genieSemanticCacheEmbeddingModelSource: ResourceSource = 'configured';
         let genieSemanticCacheEmbeddingModelRefName = '';
         let genieSemanticCacheEmbeddingModelManual = 'databricks-gte-large-en';
@@ -1166,6 +1192,11 @@ export default function ToolsSection() {
             genieSemanticCacheTtl = (semParams.time_to_live_seconds as number) ?? 86400;
           }
           genieSemanticCacheSimilarityThreshold = (semParams.similarity_threshold as number) ?? 0.85;
+          genieSemanticCacheContextSimilarityThreshold = (semParams.context_similarity_threshold as number) ?? 0.80;
+          genieSemanticCacheQuestionWeight = (semParams.question_weight as number) ?? 0.6;
+          genieSemanticCacheContextWeight = (semParams.context_weight as number) ?? 0.4;
+          genieSemanticCacheContextWindowSize = (semParams.context_window_size as number) ?? 3;
+          genieSemanticCacheMaxContextTokens = (semParams.max_context_tokens as number) ?? 2000;
           genieSemanticCacheTableName = (semParams.table_name as string) ?? 'genie_semantic_cache';
           
           // Extract embedding model - first check YAML references, then __REF__ marker, then match against configured LLMs
@@ -1274,6 +1305,11 @@ export default function ToolsSection() {
           genieSemanticCacheTtl,
           genieSemanticCacheTtlNeverExpires,
           genieSemanticCacheSimilarityThreshold,
+          genieSemanticCacheContextSimilarityThreshold,
+          genieSemanticCacheQuestionWeight,
+          genieSemanticCacheContextWeight,
+          genieSemanticCacheContextWindowSize,
+          genieSemanticCacheMaxContextTokens,
           genieSemanticCacheEmbeddingModelSource,
           genieSemanticCacheEmbeddingModelRefName,
           genieSemanticCacheEmbeddingModelManual,
@@ -1790,14 +1826,14 @@ export default function ToolsSection() {
                         <div className="ml-7 space-y-3 p-3 bg-slate-900/50 rounded-lg border border-slate-700/50">
                           <div className="grid grid-cols-2 gap-3">
                             <Input
-                              label="Similarity Threshold"
+                              label="Question Similarity Threshold"
                               type="number"
                               step="0.01"
                               min="0"
                               max="1"
                               value={formData.genieSemanticCacheSimilarityThreshold.toString()}
                               onChange={(e: ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, genieSemanticCacheSimilarityThreshold: parseFloat(e.target.value) || 0.85 })}
-                              hint="Min similarity for cache hit (0-1)"
+                              hint="Min similarity for question matching (0-1)"
                             />
                             <div className="space-y-2">
                               <label className="block text-sm font-medium text-slate-300">TTL (seconds)</label>
@@ -1821,6 +1857,62 @@ export default function ToolsSection() {
                               </label>
                             </div>
                           </div>
+                          
+                          {/* Conversation-Aware Caching Parameters */}
+                          <div className="space-y-3 p-3 bg-slate-800/30 rounded-lg border border-slate-700/30">
+                            <h5 className="text-xs font-semibold text-slate-300 uppercase tracking-wide">Conversation-Aware Settings</h5>
+                            <p className="text-xs text-slate-500">Cache considers conversation context, not just the current question</p>
+                            
+                            <div className="grid grid-cols-2 gap-3">
+                              <Input
+                                label="Context Similarity Threshold"
+                                type="number"
+                                step="0.01"
+                                min="0"
+                                max="1"
+                                value={formData.genieSemanticCacheContextSimilarityThreshold.toString()}
+                                onChange={(e: ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, genieSemanticCacheContextSimilarityThreshold: parseFloat(e.target.value) || 0.80 })}
+                                hint="Min similarity for conversation context (0-1)"
+                              />
+                              <Input
+                                label="Question Weight"
+                                type="number"
+                                step="0.01"
+                                min="0"
+                                max="1"
+                                value={formData.genieSemanticCacheQuestionWeight.toString()}
+                                onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                                  const qWeight = parseFloat(e.target.value) || 0.6;
+                                  setFormData({ 
+                                    ...formData, 
+                                    genieSemanticCacheQuestionWeight: qWeight,
+                                    genieSemanticCacheContextWeight: 1 - qWeight
+                                  });
+                                }}
+                                hint="Weight for question similarity. Context weight = 1 - this"
+                              />
+                              <Input
+                                label="Context Window Size"
+                                type="number"
+                                min="1"
+                                max="10"
+                                value={formData.genieSemanticCacheContextWindowSize.toString()}
+                                onChange={(e: ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, genieSemanticCacheContextWindowSize: parseInt(e.target.value) || 3 })}
+                                hint="Number of previous turns to include"
+                              />
+                              <Input
+                                label="Max Context Tokens"
+                                type="number"
+                                step="100"
+                                min="100"
+                                max="10000"
+                                value={formData.genieSemanticCacheMaxContextTokens.toString()}
+                                onChange={(e: ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, genieSemanticCacheMaxContextTokens: parseInt(e.target.value) || 2000 })}
+                                hint="Max tokens to prevent long embeddings"
+                              />
+                            </div>
+                          </div>
+                          
                           <ResourceSelector
                             label="Embedding Model"
                             resourceType="LLM"

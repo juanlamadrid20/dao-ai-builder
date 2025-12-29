@@ -97,6 +97,9 @@ export function validateDeletion(
     case 'vector store':
       if (testConfig.resources?.vector_stores) delete testConfig.resources.vector_stores[componentKey];
       break;
+    case 'middleware':
+      if (testConfig.middleware) delete testConfig.middleware[componentKey];
+      break;
     default:
       return null; // Unknown type, allow deletion
   }

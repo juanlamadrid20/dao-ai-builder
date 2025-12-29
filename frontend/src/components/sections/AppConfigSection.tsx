@@ -505,21 +505,30 @@ export default function AppConfigSection() {
     setSchemaSource(detectedSchemaSource);
     
     // Sync selected agents - default to all if none are explicitly configured
+    let agentKeys: string[] = [];
     if (app?.agents && Array.isArray(app.agents) && app.agents.length > 0) {
-      const agentKeys = app.agents.map(a => {
+      agentKeys = app.agents.map(a => {
         const matchedKey = Object.entries(agents).find(([, agent]) => agent.name === a.name)?.[0];
         return matchedKey || '';
       }).filter(Boolean);
       setSelectedAgents(agentKeys);
     } else {
       // Default to all agents when no explicit selection exists
-      setSelectedAgents(Object.keys(agents));
+      agentKeys = Object.keys(agents);
+      setSelectedAgents(agentKeys);
     }
     
     // Sync orchestration pattern and settings
-    const newPattern: OrchestrationPattern = 
+    // Note: Supervisor and Swarm require multiple agents, so force to 'none' if only one agent
+    let newPattern: OrchestrationPattern = 
       app?.orchestration?.supervisor ? 'supervisor' :
       app?.orchestration?.swarm ? 'swarm' : 'none';
+    
+    // Override to 'none' if insufficient agents for the pattern
+    if ((newPattern === 'supervisor' || newPattern === 'swarm') && agentKeys.length <= 1) {
+      newPattern = 'none';
+    }
+    
     setPattern(newPattern);
     
     // Sync orchestration model
@@ -623,20 +632,48 @@ export default function AppConfigSection() {
         };
       })
     );
+    
+    // Sync chat history configuration
+    setEnableChatHistory(!!app?.chat_history);
+    
+    const chatHistoryModel = app?.chat_history?.model?.name;
+    if (chatHistoryModel) {
+      const foundLLM = Object.entries(llms).find(([, llm]) => llm.name === chatHistoryModel);
+      setChatHistoryLLM(foundLLM ? foundLLM[0] : '');
+    } else {
+      setChatHistoryLLM('');
+    }
+    
+    setChatHistoryMaxTokens(app?.chat_history?.max_tokens || 2048);
+    
+    // Determine if using tokens or messages threshold
+    if (app?.chat_history?.max_tokens_before_summary) {
+      setChatHistoryUsesTokens(true);
+      setChatHistoryMaxTokensBeforeSummary(app.chat_history.max_tokens_before_summary);
+    } else if (app?.chat_history?.max_messages_before_summary) {
+      setChatHistoryUsesTokens(false);
+      setChatHistoryMaxMessagesBeforeSummary(app.chat_history.max_messages_before_summary);
+    } else {
+      // No chat history configured, reset to defaults
+      setChatHistoryUsesTokens(true);
+      setChatHistoryMaxTokensBeforeSummary(20480);
+      setChatHistoryMaxMessagesBeforeSummary(10);
+    }
   }, [app, agents, llms, tools]);
 
   // Auto-adjust orchestration pattern based on number of selected agents
-  // Single agent always uses "No Orchestration" in the UI, but YAML may output swarm if memory is configured
+  // Single agent = always "No Orchestration" (supervisor/swarm disabled)
+  // Multiple agents = enable supervisor/swarm options
   useEffect(() => {
     if (selectedAgents.length <= 1) {
-      // Single agent or no agents - UI shows "No Orchestration"
+      // Single agent or no agents - force to "No Orchestration"
+      // Supervisor and Swarm don't make sense with only one agent
       if (pattern !== 'none') {
         setPattern('none');
       }
-    } else if (selectedAgents.length > 1 && pattern === 'none') {
-      // Multiple agents - default to Supervisor orchestration
-      setPattern('supervisor');
     }
+    // Note: When agents increase to >1, we don't auto-select a pattern
+    // User must explicitly choose Supervisor or Swarm
   }, [selectedAgents.length, pattern]);
 
   const addHandoff = () => {

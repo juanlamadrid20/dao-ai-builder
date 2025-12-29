@@ -12,7 +12,24 @@ import { MiddlewareModel } from '@/types/dao-ai-types';
 import { normalizeRefNameWhileTyping } from '@/utils/name-utils';
 import { safeDelete } from '@/utils/safe-delete';
 import { useYamlScrollStore } from '@/stores/yamlScrollStore';
-import { getYamlReferences } from '@/utils/yaml-references';
+
+// Helper to generate default reference name from factory function
+const generateDefaultRefName = (factoryFunction: string): string => {
+  if (factoryFunction === 'custom') {
+    return '';
+  }
+  
+  // Extract the meaningful part from factory function name
+  // e.g., "dao_ai.middleware.create_guardrail_middleware" -> "guardrail_middleware"
+  const match = factoryFunction.match(/create_(.+)$/);
+  if (match && match[1]) {
+    return match[1];
+  }
+  
+  // Fallback: use the last part of the function name
+  const parts = factoryFunction.split('.');
+  return parts[parts.length - 1] || 'middleware';
+};
 
 // Preconfigured middleware from dao_ai.middleware
 const PRECONFIGURED_MIDDLEWARE = [
@@ -494,8 +511,10 @@ export default function MiddlewareSection() {
     return PRECONFIGURED_MIDDLEWARE.find(pm => pm.value === name);
   };
 
-  const getReferences = (key: string) => {
-    return getYamlReferences(config, `middleware.${key}`);
+  const getReferences = (_key: string): string[] => {
+    // TODO: Implement proper reference tracking for middleware
+    // For now, return empty array since safeDelete handles validation
+    return [];
   };
 
   const selectedMiddlewareInfo = PRECONFIGURED_MIDDLEWARE.find(
@@ -552,7 +571,7 @@ export default function MiddlewareSection() {
                   <div className="h-px flex-1 bg-gradient-to-r from-transparent via-slate-700 to-transparent"></div>
                 </div>
                 
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                <div className="space-y-2">
                   {categoryMiddleware.map(([key, mw]) => {
                     const info = getMiddlewareInfo(mw.name);
                     const refs = getReferences(key);
@@ -610,7 +629,7 @@ export default function MiddlewareSection() {
                               size="sm"
                               onClick={(e: React.MouseEvent) => {
                                 e.stopPropagation();
-                                safeDelete('Middleware', key, () => removeMiddleware(key), refs);
+                                safeDelete('Middleware', key, () => removeMiddleware(key));
                               }}
                             >
                               <Trash2 className="w-4 h-4" />
@@ -683,11 +702,17 @@ export default function MiddlewareSection() {
                       <button
                         key={mw.value}
                         type="button"
-                        onClick={() => setFormData({ 
-                          ...defaultFormData,
-                          refName: formData.refName,
-                          selectedFactory: mw.value,
-                        })}
+                        onClick={() => {
+                          // Generate default reference name if not editing existing middleware
+                          const newRefName = editingMiddleware 
+                            ? formData.refName 
+                            : generateDefaultRefName(mw.value);
+                          setFormData({ 
+                            ...defaultFormData,
+                            refName: newRefName,
+                            selectedFactory: mw.value,
+                          });
+                        }}
                         className={`p-3 rounded-lg border text-left transition-all ${
                           formData.selectedFactory === mw.value
                             ? 'bg-purple-500/20 border-purple-500/50 ring-1 ring-purple-500/30'

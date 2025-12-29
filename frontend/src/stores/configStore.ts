@@ -24,8 +24,11 @@ import {
 
 interface ConfigState {
   config: AppConfig;
+  skippedSteps: Set<string>; // UI state: track which optional steps are skipped
   setConfig: (config: AppConfig) => void;
   updateConfig: (updates: Partial<AppConfig>) => void;
+  skipStep: (stepId: string) => void;
+  unskipStep: (stepId: string) => void;
   
   // Variables
   addVariable: (name: string, variable: VariableModel) => void;
@@ -151,13 +154,26 @@ const defaultConfig: AppConfig = {
 
 export const useConfigStore = create<ConfigState>((set) => ({
   config: defaultConfig,
+  skippedSteps: new Set<string>(),
   
-  setConfig: (config) => set({ config }),
+  setConfig: (config) => set({ config, skippedSteps: new Set<string>() }),
   
   updateConfig: (updates) =>
     set((state) => ({
       config: { ...state.config, ...updates },
     })),
+  
+  skipStep: (stepId) =>
+    set((state) => ({
+      skippedSteps: new Set(state.skippedSteps).add(stepId),
+    })),
+  
+  unskipStep: (stepId) =>
+    set((state) => {
+      const newSkipped = new Set(state.skippedSteps);
+      newSkipped.delete(stepId);
+      return { skippedSteps: newSkipped };
+    }),
   
   addVariable: (name, variable) =>
     set((state) => ({
@@ -964,6 +980,6 @@ export const useConfigStore = create<ConfigState>((set) => ({
       },
     })),
   
-  reset: () => set({ config: defaultConfig }),
+  reset: () => set({ config: defaultConfig, skippedSteps: new Set<string>() }),
 }));
 

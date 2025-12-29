@@ -711,11 +711,9 @@ function formatOrchestration(orchestration: OrchestrationModel, definedLLMs: Rec
  */
 function formatHITL(hitl: HumanInTheLoopModel): any {
   return {
-    review_prompt: hitl.review_prompt,
-    ...(hitl.interrupt_config && { interrupt_config: hitl.interrupt_config }),
-    ...(hitl.decline_message && { decline_message: hitl.decline_message }),
-    ...(hitl.custom_actions && Object.keys(hitl.custom_actions).length > 0 && { 
-      custom_actions: hitl.custom_actions 
+    ...(hitl.review_prompt && { review_prompt: hitl.review_prompt }),
+    ...(hitl.allowed_decisions && hitl.allowed_decisions.length > 0 && { 
+      allowed_decisions: hitl.allowed_decisions 
     }),
   };
 }
@@ -874,7 +872,18 @@ function formatDatabaseRef(database: DatabaseModel, basePath?: string): any {
     name: database.name,
   };
   
+  // Always include type if specified
+  if (database.type) db.type = database.type;
+  
+  // Lakebase-specific fields
   if (database.instance_name) db.instance_name = database.instance_name;
+  
+  // PostgreSQL-specific fields
+  if (database.host) {
+    db.host = formatCredentialWithPath(database.host, basePath ? `${basePath}.host` : undefined);
+  }
+  
+  // Common fields
   if (database.description) db.description = database.description;
   if (database.capacity) db.capacity = database.capacity;
   if (database.max_pool_size) db.max_pool_size = database.max_pool_size;
@@ -923,6 +932,11 @@ function formatDatabaseRef(database: DatabaseModel, basePath?: string): any {
   }
   if (database.password) {
     db.password = formatCredentialWithPath(database.password, basePath ? `${basePath}.password` : undefined);
+  }
+  
+  // On Behalf of User flag (only for Lakebase)
+  if (database.on_behalf_of_user && database.type === 'lakebase') {
+    db.on_behalf_of_user = database.on_behalf_of_user;
   }
   
   return db;

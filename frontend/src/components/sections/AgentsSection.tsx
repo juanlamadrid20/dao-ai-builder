@@ -163,7 +163,7 @@ export default function AgentsSection() {
   }));
 
   const middleware = config.middleware || {};
-  const middlewareOptions = Object.entries(middleware).map(([key, mw]) => ({
+  const middlewareOptions = Object.entries(middleware).map(([key]) => ({
     value: key,
     label: key,
   }));
@@ -379,6 +379,7 @@ function AgentModal({
   const [showAiInput, setShowAiInput] = useState(false);
   const [templateParams, setTemplateParams] = useState<string[]>(['user_id', 'store_num']);
   const [customParam, setCustomParam] = useState('');
+  const [jsonValidation, setJsonValidation] = useState<{ valid: boolean; message: string } | null>(null);
   const [formData, setFormData] = useState({
     refName: '',  // Reference name used as the key in YAML
     name: '',
@@ -392,14 +393,26 @@ function AgentModal({
     selectedMiddleware: [] as string[],
     // Response format configuration
     enableResponseFormat: false,
-    responseFormatType: 'simple' as 'simple' | 'advanced',
+    schemaType: 'json' as 'json' | 'class',
     responseSchema: '',
-    useTool: null as boolean | null,
+    useTool: true as boolean | null, // Default to 'tool' strategy
   });
   
   // Store initial form data for comparison (to detect changes)
   const [initialFormData, setInitialFormData] = useState<typeof formData | null>(null);
   const [initialPromptSource, setInitialPromptSource] = useState<PromptSource>('inline');
+
+  const handleValidateJson = () => {
+    try {
+      JSON.parse(formData.responseSchema);
+      setJsonValidation({ valid: true, message: 'Valid JSON schema' });
+    } catch (error) {
+      setJsonValidation({ 
+        valid: false, 
+        message: error instanceof Error ? error.message : 'Invalid JSON'
+      });
+    }
+  };
 
   const handleGeneratePrompt = async (improveExisting = false) => {
     setIsGeneratingPrompt(true);
@@ -503,19 +516,22 @@ function AgentModal({
       
       // Parse response_format if present
       let enableResponseFormat = false;
-      let responseFormatType: 'simple' | 'advanced' = 'simple';
+      let schemaType: 'json' | 'class' = 'json';
       let responseSchema = '';
-      let useTool: boolean | null = null;
+      let useTool: boolean | null = true;
       
       if (editingAgent.response_format) {
         enableResponseFormat = true;
         if (typeof editingAgent.response_format === 'string') {
-          responseFormatType = 'simple';
+          // Simple mode: string can be class name or JSON schema
           responseSchema = editingAgent.response_format;
+          // Try to detect if it's JSON (starts with { or [) or class name
+          schemaType = responseSchema.trim().startsWith('{') || responseSchema.trim().startsWith('[') ? 'json' : 'class';
         } else if (typeof editingAgent.response_format === 'object') {
-          responseFormatType = 'advanced';
+          // Advanced mode with ResponseFormatModel
           responseSchema = editingAgent.response_format.response_schema || '';
-          useTool = editingAgent.response_format.use_tool ?? null;
+          schemaType = responseSchema.trim().startsWith('{') || responseSchema.trim().startsWith('[') ? 'json' : 'class';
+          useTool = editingAgent.response_format.use_tool ?? true;
         }
       }
       
@@ -531,7 +547,7 @@ function AgentModal({
         selectedGuardrails: selectedGuardrailsList,
         selectedMiddleware: selectedMiddlewareList,
         enableResponseFormat,
-        responseFormatType,
+        schemaType,
         responseSchema,
         useTool,
       };
@@ -549,7 +565,7 @@ function AgentModal({
         selectedGuardrails: [...selectedGuardrailsList],
         selectedMiddleware: [...selectedMiddlewareList],
         enableResponseFormat,
-        responseFormatType,
+        schemaType,
         responseSchema,
         useTool,
       };
@@ -572,9 +588,9 @@ function AgentModal({
         selectedGuardrails: [] as string[],
         selectedMiddleware: [] as string[],
         enableResponseFormat: false,
-        responseFormatType: 'simple' as 'simple' | 'advanced',
+        schemaType: 'json' as 'json' | 'class',
         responseSchema: '',
-        useTool: null as boolean | null,
+        useTool: true as boolean | null, // Default to 'tool' strategy
       };
       setPromptSource('inline');
       setFormData(defaultFormData);
@@ -601,16 +617,11 @@ function AgentModal({
     // Build response_format if enabled
     let responseFormat: any = undefined;
     if (formData.enableResponseFormat && formData.responseSchema) {
-      if (formData.responseFormatType === 'simple') {
-        // Simple mode: just pass the schema string
-        responseFormat = formData.responseSchema;
-      } else {
-        // Advanced mode: full ResponseFormatModel
-        responseFormat = {
-          response_schema: formData.responseSchema,
-          use_tool: formData.useTool,
-        };
-      }
+      // Always build ResponseFormatModel with schema and use_tool strategy
+      responseFormat = {
+        response_schema: formData.responseSchema,
+        use_tool: formData.useTool,
+      };
     }
 
     const agent: AgentModel = {
@@ -656,7 +667,7 @@ function AgentModal({
     
     // Compare response format fields
     if (formData.enableResponseFormat !== initialFormData.enableResponseFormat) return true;
-    if (formData.responseFormatType !== initialFormData.responseFormatType) return true;
+    if (formData.schemaType !== initialFormData.schemaType) return true;
     if (formData.responseSchema !== initialFormData.responseSchema) return true;
     if (formData.useTool !== initialFormData.useTool) return true;
     
@@ -1029,13 +1040,16 @@ function AgentModal({
           <div className="flex items-center justify-between">
             <div className="flex items-center space-x-2">
               <label className="text-sm font-medium text-slate-300">Response Format</label>
-              <Badge variant="secondary" className="text-xs">Optional</Badge>
+              <Badge variant="info" className="text-xs">Optional</Badge>
             </div>
             <label className="flex items-center space-x-2 cursor-pointer">
               <input
                 type="checkbox"
                 checked={formData.enableResponseFormat}
-                onChange={(e) => setFormData({ ...formData, enableResponseFormat: e.target.checked })}
+                onChange={(e) => {
+                  setFormData({ ...formData, enableResponseFormat: e.target.checked });
+                  setJsonValidation(null); // Clear validation when toggling
+                }}
                 className="rounded border-slate-600 text-violet-500 focus:ring-violet-500 focus:ring-offset-slate-900"
               />
               <span className="text-xs text-slate-400">Enable</span>
@@ -1045,76 +1059,112 @@ function AgentModal({
           {formData.enableResponseFormat && (
             <div className="space-y-3 pt-2">
               <p className="text-xs text-slate-400">
-                Configure structured response output. The response schema can be a fully qualified type name (e.g., <code className="px-1 py-0.5 bg-slate-900/50 rounded text-violet-400">myapp.models.MyModel</code>) or a JSON schema string.
+                Configure structured response output using JSON schema or a fully qualified class name.
               </p>
               
-              {/* Response Format Type Toggle */}
+              {/* Schema Type Toggle - JSON Schema or Class Name */}
               <div className="flex items-center space-x-2">
-                <label className="text-xs font-medium text-slate-400">Mode:</label>
+                <label className="text-xs font-medium text-slate-400">Schema Type:</label>
                 <div className="inline-flex rounded-lg bg-slate-900/50 p-0.5">
                   <button
                     type="button"
-                    onClick={() => setFormData({ ...formData, responseFormatType: 'simple' })}
+                    onClick={() => {
+                      setFormData({ ...formData, schemaType: 'json' });
+                      setJsonValidation(null);
+                    }}
                     className={`px-3 py-1 text-xs rounded-md font-medium transition-all duration-150 ${
-                      formData.responseFormatType === 'simple'
+                      formData.schemaType === 'json'
                         ? 'bg-violet-500/20 text-violet-400 border border-violet-500/40'
                         : 'text-slate-400 border border-transparent hover:text-slate-300'
                     }`}
                   >
-                    Simple
+                    JSON Schema
                   </button>
                   <button
                     type="button"
-                    onClick={() => setFormData({ ...formData, responseFormatType: 'advanced' })}
+                    onClick={() => {
+                      setFormData({ ...formData, schemaType: 'class' });
+                      setJsonValidation(null);
+                    }}
                     className={`px-3 py-1 text-xs rounded-md font-medium transition-all duration-150 ${
-                      formData.responseFormatType === 'advanced'
+                      formData.schemaType === 'class'
                         ? 'bg-violet-500/20 text-violet-400 border border-violet-500/40'
                         : 'text-slate-400 border border-transparent hover:text-slate-300'
                     }`}
                   >
-                    Advanced
+                    Class Name
                   </button>
                 </div>
               </div>
 
-              {/* Response Schema Input */}
-              <div className="space-y-2">
-                <label className="text-xs font-medium text-slate-400">Response Schema</label>
-                <Textarea
-                  value={formData.responseSchema}
-                  onChange={(e) => setFormData({ ...formData, responseSchema: e.target.value })}
-                  rows={3}
-                  placeholder="myapp.models.ResponseModel or JSON schema string..."
-                  hint={formData.responseFormatType === 'simple' 
-                    ? "Fully qualified type name or JSON schema. Will auto-detect strategy." 
-                    : "Type name or JSON schema with manual strategy control"}
-                />
-              </div>
-
-              {/* Advanced Options */}
-              {formData.responseFormatType === 'advanced' && (
-                <div className="space-y-2 p-3 bg-slate-900/50 rounded-lg border border-slate-700/30">
-                  <label className="text-xs font-medium text-slate-400">Strategy (use_tool)</label>
-                  <Select
-                    value={formData.useTool === null ? 'auto' : formData.useTool ? 'tool' : 'provider'}
+              {/* Schema Input - JSON or Class Name */}
+              {formData.schemaType === 'json' ? (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-medium text-slate-400">JSON Schema</label>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      onClick={handleValidateJson}
+                    >
+                      Validate
+                    </Button>
+                  </div>
+                  <Textarea
+                    value={formData.responseSchema}
                     onChange={(e) => {
-                      const val = e.target.value;
-                      setFormData({ 
-                        ...formData, 
-                        useTool: val === 'auto' ? null : val === 'tool' ? true : false 
-                      });
+                      setFormData({ ...formData, responseSchema: e.target.value });
+                      setJsonValidation(null); // Clear validation on change
                     }}
-                    options={[
-                      { value: 'auto', label: 'Auto-detect (recommended)' },
-                      { value: 'provider', label: 'Provider Strategy (native)' },
-                      { value: 'tool', label: 'Tool Strategy (function calling)' },
-                    ]}
+                    rows={6}
+                    placeholder='{"type": "object", "properties": {...}}'
+                    hint="Enter a JSON schema to define the response structure"
                   />
-                  <p className="text-xs text-slate-500">
-                    Auto-detect lets LangChain choose the best strategy based on model capabilities. Provider uses native structured output, Tool uses function calling.
-                  </p>
+                  {jsonValidation && (
+                    <div className={`p-2 rounded-lg text-xs ${
+                      jsonValidation.valid 
+                        ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-400'
+                        : 'bg-red-500/10 border border-red-500/30 text-red-400'
+                    }`}>
+                      {jsonValidation.message}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <label className="text-xs font-medium text-slate-400">Fully Qualified Class Name</label>
+                  <Input
+                    value={formData.responseSchema}
+                    onChange={(e) => setFormData({ ...formData, responseSchema: e.target.value })}
+                    placeholder="myapp.models.ResponseModel"
+                    hint="e.g., myapp.models.MyResponseModel"
+                  />
                 </div>
               )}
+
+              {/* Strategy Dropdown - Always visible */}
+              <div className="space-y-2">
+                <label className="text-xs font-medium text-slate-400">Strategy (use_tool)</label>
+                <Select
+                  value={formData.useTool === null ? 'auto' : formData.useTool ? 'tool' : 'provider'}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setFormData({ 
+                      ...formData, 
+                      useTool: val === 'auto' ? null : val === 'tool' ? true : false 
+                    });
+                  }}
+                  options={[
+                    { value: 'auto', label: 'Auto-detect' },
+                    { value: 'tool', label: 'Tool Strategy (function calling)' },
+                    { value: 'provider', label: 'Provider Strategy (native)' },
+                  ]}
+                />
+                <p className="text-xs text-slate-500">
+                  Auto-detect lets LangChain choose the best strategy. Tool uses function calling (recommended). Provider uses native structured output.
+                </p>
+              </div>
             </div>
           )}
         </div>

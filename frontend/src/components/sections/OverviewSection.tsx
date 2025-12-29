@@ -25,6 +25,7 @@ interface StepConfig {
   description: string;
   icon: React.ElementType;
   color: string;
+  optional?: boolean;
   isComplete: (config: any) => boolean;
 }
 
@@ -54,11 +55,21 @@ const GETTING_STARTED_STEPS: StepConfig[] = [
     description: 'Define tools that agents can use to perform tasks',
     icon: Wrench,
     color: 'text-amber-400',
+    optional: true,
     isComplete: (config) => Object.keys(config.tools || {}).length > 0,
   },
   {
+    id: 'prompts',
+    title: '4. Configure Prompts',
+    description: 'Set up prompts from MLflow Prompt Registry',
+    icon: FileText,
+    color: 'text-purple-400',
+    optional: true,
+    isComplete: (config) => Object.keys(config.prompts || {}).length > 0,
+  },
+  {
     id: 'agents',
-    title: '4. Build Agents',
+    title: '5. Build Agents',
     description: 'Create AI agents with models, tools, and prompts',
     icon: Bot,
     color: 'text-violet-400',
@@ -66,7 +77,7 @@ const GETTING_STARTED_STEPS: StepConfig[] = [
   },
   {
     id: 'app',
-    title: '5. Configure Application',
+    title: '6. Configure Application',
     description: 'Set up your application and deployment settings',
     icon: Settings,
     color: 'text-rose-400',
@@ -75,7 +86,7 @@ const GETTING_STARTED_STEPS: StepConfig[] = [
 ];
 
 export default function OverviewSection({ onNavigate }: OverviewSectionProps) {
-  const { config } = useConfigStore();
+  const { config, skippedSteps, skipStep, unskipStep } = useConfigStore();
 
   // Calculate stats
   const stats = {
@@ -86,7 +97,10 @@ export default function OverviewSection({ onNavigate }: OverviewSectionProps) {
     prompts: Object.keys(config.prompts || {}).length,
   };
 
-  const completedSteps = GETTING_STARTED_STEPS.filter(step => step.isComplete(config)).length;
+  // Count steps as complete if they're actually complete OR if they're skipped
+  const completedSteps = GETTING_STARTED_STEPS.filter(
+    step => step.isComplete(config) || skippedSteps.has(step.id)
+  ).length;
   const totalSteps = GETTING_STARTED_STEPS.length;
   const progressPercent = Math.round((completedSteps / totalSteps) * 100);
 
@@ -153,12 +167,12 @@ export default function OverviewSection({ onNavigate }: OverviewSectionProps) {
               <p className="text-xs text-slate-500">Tools</p>
             </div>
             <div className="text-center">
-              <p className="text-lg font-semibold text-white">{stats.agents}</p>
-              <p className="text-xs text-slate-500">Agents</p>
-            </div>
-            <div className="text-center">
               <p className="text-lg font-semibold text-white">{stats.prompts}</p>
               <p className="text-xs text-slate-500">Prompts</p>
+            </div>
+            <div className="text-center">
+              <p className="text-lg font-semibold text-white">{stats.agents}</p>
+              <p className="text-xs text-slate-500">Agents</p>
             </div>
           </div>
         )}
@@ -173,7 +187,10 @@ export default function OverviewSection({ onNavigate }: OverviewSectionProps) {
         {GETTING_STARTED_STEPS.map((step, index) => {
           const Icon = step.icon;
           const isComplete = step.isComplete(config);
-          const isNext = !isComplete && GETTING_STARTED_STEPS.slice(0, index).every(s => s.isComplete(config));
+          const isSkipped = skippedSteps.has(step.id);
+          const isNext = !isComplete && !isSkipped && GETTING_STARTED_STEPS.slice(0, index).every(
+            s => s.isComplete(config) || skippedSteps.has(s.id)
+          );
           
           return (
             <Card 
@@ -184,21 +201,22 @@ export default function OverviewSection({ onNavigate }: OverviewSectionProps) {
               <div className="flex items-center justify-between">
                 <div className="flex items-center space-x-4">
                   <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
-                    isComplete 
-                      ? 'bg-emerald-500/20' 
+                    isComplete || isSkipped
+                      ? 'bg-emerald-500/20'
                       : isNext 
                         ? 'bg-blue-500/20' 
                         : 'bg-slate-700/50'
                   }`}>
-                    {isComplete ? (
+                    {isComplete || isSkipped ? (
                       <CheckCircle2 className="w-5 h-5 text-emerald-400" />
                     ) : (
                       <Icon className={`w-5 h-5 ${isNext ? step.color : 'text-slate-500'}`} />
                     )}
                   </div>
                   <div>
-                    <h4 className={`font-medium ${isComplete ? 'text-slate-400' : 'text-white'}`}>
+                    <h4 className={`font-medium ${isComplete || isSkipped ? 'text-slate-400' : 'text-white'}`}>
                       {step.title}
+                      {step.optional && !isComplete && !isSkipped && <span className="text-xs text-slate-500 ml-2">(Optional)</span>}
                     </h4>
                     <p className="text-sm text-slate-500">{step.description}</p>
                   </div>
@@ -207,15 +225,33 @@ export default function OverviewSection({ onNavigate }: OverviewSectionProps) {
                   {isComplete && (
                     <Badge variant="success">Complete</Badge>
                   )}
+                  {isSkipped && (
+                    <Badge variant="success">Skipped</Badge>
+                  )}
                   {isNext && (
                     <Badge variant="info">Next Step</Badge>
+                  )}
+                  {step.optional && !isComplete && !isSkipped && (
+                    <Button 
+                      variant="secondary" 
+                      size="sm"
+                      onClick={() => skipStep(step.id)}
+                    >
+                      Skip
+                    </Button>
                   )}
                   <Button 
                     variant={isNext ? 'primary' : 'secondary'} 
                     size="sm"
-                    onClick={() => onNavigate(step.id)}
+                    onClick={() => {
+                      // Automatically unskip when clicking Edit on a skipped step
+                      if (isSkipped) {
+                        unskipStep(step.id);
+                      }
+                      onNavigate(step.id);
+                    }}
                   >
-                    {isComplete ? 'Edit' : isNext ? 'Start' : 'Configure'}
+                    {isComplete || isSkipped ? 'Edit' : isNext ? 'Start' : 'Configure'}
                     <ArrowRight className="w-4 h-4 ml-1" />
                   </Button>
                 </div>
