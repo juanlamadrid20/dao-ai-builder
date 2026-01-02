@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
-export type CredentialType = 'obo' | 'manual_sp' | 'manual_pat';
+export type CredentialType = 'obo' | 'app' | 'manual_sp' | 'manual_pat';
 
 export interface CredentialConfig {
   type: CredentialType;
@@ -9,6 +9,14 @@ export interface CredentialConfig {
   client_secret?: string;
   pat?: string;
 }
+
+// Credential type descriptions for UI
+export const CREDENTIAL_TYPE_INFO: Record<CredentialType, { label: string; description: string }> = {
+  obo: { label: 'OBO Token', description: 'Use your logged-in credentials' },
+  app: { label: 'App Service Principal', description: 'Use application credentials' },
+  manual_sp: { label: 'Service Principal', description: 'Enter client ID and secret' },
+  manual_pat: { label: 'PAT', description: 'Enter personal access token' },
+};
 
 interface CredentialState {
   credentialType: CredentialType;
@@ -32,7 +40,7 @@ interface CredentialState {
 export const useCredentialStore = create<CredentialState>()(
   persist(
     (set, get) => ({
-      credentialType: 'obo',
+      credentialType: 'manual_pat',
       manualClientId: '',
       manualClientSecret: '',
       manualPat: '',
@@ -59,6 +67,7 @@ export const useCredentialStore = create<CredentialState>()(
       hasCredentials: () => {
         const state = get();
         if (state.credentialType === 'obo') return true;
+        if (state.credentialType === 'app') return true; // App uses server-side credentials
         if (state.credentialType === 'manual_sp') {
           return !!(state.manualClientId && state.manualClientSecret);
         }

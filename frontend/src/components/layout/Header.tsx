@@ -30,9 +30,13 @@ export default function Header({ showPreview, onTogglePreview }: HeaderProps) {
   const [showImportModal, setShowImportModal] = useState(false);
 
   const hasAgents = Object.keys(config.agents || {}).length > 0;
+  const hasApp = !!(config.app?.name);
   const hasOrchestration = !!(config.app?.orchestration?.supervisor || config.app?.orchestration?.swarm);
-  const canDeploy = hasAgents && hasOrchestration;
-  const canChat = hasAgents;
+  // All actions require a saved app configuration with agents
+  const hasValidConfig = hasAgents && hasApp && hasOrchestration;
+  const canDeploy = hasValidConfig;
+  const canChat = hasValidConfig;
+  const canVisualize = hasValidConfig;
 
   // Fetch dao-ai version on mount
   useEffect(() => {
@@ -205,8 +209,8 @@ export default function Header({ showPreview, onTogglePreview }: HeaderProps) {
           variant="secondary" 
           size="sm"
           onClick={() => setShowVisualization(true)}
-          disabled={!hasAgents}
-          title={hasAgents ? 'Visualize agent graph' : 'Add agents to visualize'}
+          disabled={!canVisualize}
+          title={canVisualize ? 'Visualize agent graph' : 'Save Application Configuration first'}
         >
           <GitBranch className="w-4 h-4" />
           Visualize
@@ -217,7 +221,7 @@ export default function Header({ showPreview, onTogglePreview }: HeaderProps) {
           size="sm"
           onClick={() => setShowChat(true)}
           disabled={!canChat}
-          title={canChat ? 'Test agent locally' : 'Add agents to chat'}
+          title={canChat ? 'Test agent locally' : 'Save Application Configuration first'}
           className="bg-gradient-to-r from-cyan-600/80 to-blue-600/80 hover:from-cyan-500 hover:to-blue-500 text-white border-0"
         >
           <MessageSquare className="w-4 h-4" />
@@ -229,7 +233,7 @@ export default function Header({ showPreview, onTogglePreview }: HeaderProps) {
           size="sm"
           onClick={() => setShowDeployment(true)}
           disabled={!canDeploy}
-          title={canDeploy ? 'Deploy to Databricks' : 'Configure agents and orchestration first'}
+          title={canDeploy ? 'Deploy to Databricks' : 'Save Application Configuration first'}
           className="bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500"
         >
           <Rocket className="w-4 h-4" />

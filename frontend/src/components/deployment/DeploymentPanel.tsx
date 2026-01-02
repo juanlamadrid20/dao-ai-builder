@@ -20,12 +20,11 @@ import {
 } from 'lucide-react';
 import { useConfigStore } from '@/stores/configStore';
 import { useDeploymentStore, DeploymentStatus } from '@/stores/deploymentStore';
+import { useCredentialStore, CredentialConfig } from '@/stores/credentialStore';
 import { generateYAML } from '@/utils/yaml-generator';
 import yaml from 'js-yaml';
 import Button from '../ui/Button';
 import Badge from '../ui/Badge';
-
-type CredentialType = 'app' | 'obo' | 'manual_sp' | 'manual_pat';
 
 /**
  * Remove internal-only fields (like refName) from a config object.
@@ -42,13 +41,6 @@ function sanitizeConfig(obj: any): any {
     result[key] = sanitizeConfig(value);
   }
   return result;
-}
-
-interface CredentialConfig {
-  type: CredentialType;
-  client_id?: string;
-  client_secret?: string;
-  pat?: string;
 }
 
 interface DeploymentPanelProps {
@@ -112,11 +104,18 @@ export default function DeploymentPanel({ onClose }: DeploymentPanelProps) {
   const [isValidating, setIsValidating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   
-  // Credential selection state
-  const [credentialType, setCredentialType] = useState<CredentialType>('manual_pat');
-  const [manualClientId, setManualClientId] = useState('');
-  const [manualClientSecret, setManualClientSecret] = useState('');
-  const [manualPat, setManualPat] = useState('');
+  // Use shared credential store (persisted and shared with ChatPanel)
+  const {
+    credentialType,
+    manualClientId,
+    manualClientSecret,
+    manualPat,
+    setCredentialType,
+    setManualClientId,
+    setManualClientSecret,
+    setManualPat,
+  } = useCredentialStore();
+  
   const [availableCredentials, setAvailableCredentials] = useState<{
     hasAppCredentials: boolean;
     hasOboToken: boolean;

@@ -41,12 +41,14 @@ import { normalizeRefName, normalizeRefNameWhileTyping } from '@/utils/name-util
 import { safeDelete } from '@/utils/safe-delete';
 import { useYamlScrollStore } from '@/stores/yamlScrollStore';
 
-// Common reranking models available in FlashRank
+// Valid FlashRank reranking models - see https://github.com/PrithivirajDamodaran/FlashRank
 const RERANK_MODELS = [
-  { value: 'ms-marco-TinyBERT-L-2-v2', label: 'TinyBERT L-2 (fastest)' },
-  { value: 'ms-marco-MiniLM-L-6-v2', label: 'MiniLM L-6' },
-  { value: 'ms-marco-MiniLM-L-12-v2', label: 'MiniLM L-12 (balanced)' },
-  { value: 'rank-T5-flan', label: 'T5-flan (most accurate)' },
+  { value: 'ms-marco-TinyBERT-L-2-v2', label: 'TinyBERT L-2 (~4MB, fastest, default)' },
+  { value: 'ms-marco-MiniLM-L-12-v2', label: 'MiniLM L-12 (~34MB, best cross-encoder)' },
+  { value: 'rank-T5-flan', label: 'T5-flan (~110MB, best non cross-encoder)' },
+  { value: 'ms-marco-MultiBERT-L-12', label: 'MultiBERT L-12 (~150MB, 100+ languages)' },
+  { value: 'ce-esci-MiniLM-L12-v2', label: 'ESCI MiniLM L-12 (e-commerce optimized)' },
+  { value: 'miniReranker_arabic_v1', label: 'Arabic Reranker (Arabic language)' },
 ];
 
 // Query type options
@@ -83,7 +85,7 @@ export default function RetrieversSection() {
     enableRerank: false,
     rerankModel: 'ms-marco-MiniLM-L-12-v2',
     rerankTopN: '',
-    rerankCacheDir: '/tmp/flashrank_cache',
+    rerankCacheDir: '~/.dao_ai/cache/flashrank',
     rerankColumns: '',
   });
 
@@ -109,7 +111,7 @@ export default function RetrieversSection() {
       enableRerank: false,
       rerankModel: 'ms-marco-MiniLM-L-12-v2',
       rerankTopN: '',
-      rerankCacheDir: '/tmp/flashrank_cache',
+      rerankCacheDir: '~/.dao_ai/cache/flashrank',
       rerankColumns: '',
     });
     setEditingKey(null);
@@ -139,7 +141,7 @@ export default function RetrieversSection() {
     let enableRerank = false;
     let rerankModel = 'ms-marco-MiniLM-L-12-v2';
     let rerankTopN = '';
-    let rerankCacheDir = '/tmp/flashrank_cache';
+    let rerankCacheDir = '~/.dao_ai/cache/flashrank';
     let rerankColumns = '';
     
     if (retriever.rerank) {
@@ -807,7 +809,7 @@ export default function RetrieversSection() {
                   name="rerankCacheDir"
                   value={formData.rerankCacheDir}
                   onChange={handleChange}
-                  placeholder="/tmp/flashrank_cache"
+                  placeholder="~/.dao_ai/cache/flashrank"
                   hint="Directory to cache downloaded model weights"
                 />
               </div>

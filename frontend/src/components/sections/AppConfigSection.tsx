@@ -11,6 +11,7 @@ import Badge from '../ui/Badge';
 import MultiSelect from '../ui/MultiSelect';
 import { LogLevel } from '@/types/dao-ai-types';
 import { clsx } from 'clsx';
+import { normalizeRefName } from '@/utils/name-utils';
 
 type SchemaSource = 'configured' | 'select';
 
@@ -477,6 +478,32 @@ export default function AppConfigSection() {
     return false;
   })();
 
+  // Validation - check if all required fields are present
+  const validationErrors: string[] = [];
+  
+  // Required: App name
+  if (!formData.name.trim()) {
+    validationErrors.push('Application name is required');
+  }
+  
+  // Required: Model name (for registered_model)
+  if (!formData.modelName.trim()) {
+    validationErrors.push('Model name is required');
+  }
+  
+  // Required: At least one agent must be selected
+  if (selectedAgents.length === 0) {
+    validationErrors.push('At least one agent must be selected');
+  }
+  
+  // For Supervisor/Swarm patterns, an LLM must be selected
+  if (pattern !== 'none' && !selectedLLM) {
+    validationErrors.push(`${pattern === 'supervisor' ? 'Supervisor' : 'Swarm'} orchestration requires an LLM`);
+  }
+  
+  const isValid = validationErrors.length === 0;
+  const canSave = hasChanges && isValid;
+
   const llmOptions = [
     { value: '', label: 'Select an LLM...' },
     ...Object.entries(llms).map(([key, llm]) => ({
@@ -879,41 +906,45 @@ export default function AppConfigSection() {
         // Add memory reference if configured
         ...(orchestrationMemoryRef && { memory: `*${orchestrationMemoryRef}` }),
       };
-    } else if (pattern === 'none' && orchestrationMemoryRef) {
-      // Single agent with memory - preserve existing orchestration config if present, otherwise create minimal swarm
-      // This ensures we don't wipe out existing settings (like model) when just adding memory
+    } else if (pattern === 'none') {
+      // No orchestration pattern selected - auto-create swarm of one for single agent workflows
+      // This ensures Chat/Visualize/Deploy are enabled with a valid configuration
       const existingOrchestration = config.app?.orchestration;
-      if (existingOrchestration?.supervisor) {
-        // Preserve existing supervisor config
-        orchestration = {
-          supervisor: existingOrchestration.supervisor,
-          memory: `*${orchestrationMemoryRef}`,
-        };
-      } else if (existingOrchestration?.swarm) {
-        // Preserve existing swarm config
-        orchestration = {
-          swarm: existingOrchestration.swarm,
-          memory: `*${orchestrationMemoryRef}`,
-        };
-      } else {
-        // No existing orchestration - create swarm for memory support using agent's model
-        // Try to get model from: 1) top-level agents dict, 2) app.agents array, 3) fallback to empty
-        let agentModel: any = undefined;
-        
-        // First try: Get from top-level agents dictionary using selectedAgents keys
-        const firstAgentKey = selectedAgents[0];
-        if (firstAgentKey && agents[firstAgentKey]) {
-          agentModel = agents[firstAgentKey].model;
+      
+      // Get model from first selected agent for the swarm
+      let agentModel: any = undefined;
+      const firstAgentKey = selectedAgents[0];
+      if (firstAgentKey && agents[firstAgentKey]) {
+        agentModel = agents[firstAgentKey].model;
+      }
+      // Fallback: Get from app.agents array
+      if (!agentModel && app?.agents && Array.isArray(app.agents) && app.agents.length > 0) {
+        agentModel = app.agents[0].model;
+      }
+      
+      if (orchestrationMemoryRef) {
+        // Memory is configured - preserve existing orchestration or create minimal swarm
+        if (existingOrchestration?.supervisor) {
+          orchestration = {
+            supervisor: existingOrchestration.supervisor,
+            memory: `*${orchestrationMemoryRef}`,
+          };
+        } else if (existingOrchestration?.swarm) {
+          orchestration = {
+            swarm: existingOrchestration.swarm,
+            memory: `*${orchestrationMemoryRef}`,
+          };
+        } else {
+          orchestration = {
+            swarm: agentModel ? { model: agentModel } : {},
+            memory: `*${orchestrationMemoryRef}`,
+          };
         }
-        
-        // Second try: Get from app.agents array if top-level didn't work
-        if (!agentModel && app?.agents && Array.isArray(app.agents) && app.agents.length > 0) {
-          agentModel = app.agents[0].model;
-        }
-        
+      } else if (selectedAgents.length > 0 && agentModel) {
+        // No memory, but agents exist - create minimal swarm of one
+        // This ensures the app has valid orchestration for chat/deploy
         orchestration = {
-          swarm: agentModel ? { model: agentModel } : {},
-          memory: `*${orchestrationMemoryRef}`,
+          swarm: { model: agentModel },
         };
       }
     }
@@ -1014,7 +1045,7 @@ export default function AppConfigSection() {
               const newName = e.target.value;
               const snakeCaseName = toSnakeCase(newName);
               const newEndpointName = snakeCaseName ? `${snakeCaseName}_endpoint` : '';
-              const newModelName = snakeCaseName || '';
+              const newModelName = normalizeRefName(newName);
               
               // Update form data
               const updates: typeof formData = { ...formData, name: newName };
@@ -1720,7 +1751,7 @@ export default function AppConfigSection() {
             label="Registered Model Name"
             placeholder="e.g., my_agent_model"
             value={formData.modelName}
-            onChange={(e) => setFormData({ ...formData, modelName: e.target.value })}
+            onChange={(e) => setFormData({ ...formData, modelName: normalizeRefName(e.target.value) })}
             required
           />
           
@@ -2310,10 +2341,16 @@ export default function AppConfigSection() {
 
       {/* Save Button */}
       <div className="flex justify-end items-center space-x-3">
-        {!hasChanges && (
+        {!hasChanges && isValid && (
           <span className="text-sm text-slate-500">No unsaved changes</span>
         )}
-        <Button onClick={handleSave} size="lg" disabled={!hasChanges}>
+        {!isValid && hasChanges && (
+          <div className="text-sm text-amber-400 flex items-center gap-2">
+            <span>Missing required fields:</span>
+            <span>{validationErrors.join(', ')}</span>
+          </div>
+        )}
+        <Button onClick={handleSave} size="lg" disabled={!canSave}>
           <Save className="w-4 h-4" />
           Save Configuration
         </Button>

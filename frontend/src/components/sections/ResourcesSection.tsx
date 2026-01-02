@@ -4445,6 +4445,15 @@ function VectorStoresPanel({ showForm, setShowForm, editingKey, setEditingKey, o
     label: `${col.name}${col.type_text ? ` (${col.type_text})` : ''}`,
   }));
   
+  // Auto-select all columns when table columns are loaded
+  useEffect(() => {
+    // Only auto-select if we have columns loaded and no columns are currently selected
+    if (tableColumns && tableColumns.length > 0 && !columnsInput) {
+      const allColumnNames = tableColumns.map(col => col.name).join(', ');
+      setColumnsInput(allColumnNames);
+    }
+  }, [tableColumns]);
+  
   // Vector search indexes for selected endpoint (used in "Create New" mode) - currently unused but may be useful for future enhancements
   const _vsIndexesResult = useVectorSearchIndexes(formData.endpoint_name || null);
   void _vsIndexesResult; // Suppress unused warning
