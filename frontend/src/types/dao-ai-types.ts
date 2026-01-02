@@ -121,7 +121,8 @@ export interface GenieRoomModel {
   on_behalf_of_user?: boolean;
   name: string;
   description?: string;
-  space_id: string;
+  space_id: VariableValue;  // Can be string or variable reference (env, secret, etc.)
+  warehouse?: WarehouseModel | string;  // Optional warehouse reference
   // Authentication fields
   service_principal?: ServicePrincipalModel | string;
   client_id?: VariableValue;
@@ -171,17 +172,22 @@ export interface GenieSemanticCacheParametersModel {
   max_context_tokens?: number;  // Default: 2000 - Maximum context length to prevent extremely long embeddings
 }
 
+// Database type is inferred from fields:
+// - instance_name provided → Lakebase
+// - host provided → PostgreSQL
+// NOTE: type field removed in dao-ai 0.1.2, type is inferred from instance_name vs host
 export type DatabaseType = "postgres" | "lakebase";
 
 export interface DatabaseModel {
   on_behalf_of_user?: boolean;
   name: string;
-  type?: DatabaseType;
-  instance_name?: string;
+  // NOTE: type field is for UI only, not included in YAML output (inferred from instance_name vs host)
+  _uiType?: DatabaseType;
+  instance_name?: string;  // Lakebase instance name
   description?: string;
   host?: VariableValue;  // PostgreSQL hostname (can be variable or string)
-  database?: string;
-  port?: number;
+  database?: VariableValue;  // Database name (default: "databricks_postgres")
+  port?: VariableValue;  // Port number (default: 5432)
   connection_kwargs?: Record<string, any>;
   max_pool_size?: number;
   timeout_seconds?: number;
@@ -244,11 +250,9 @@ export interface FactoryFunctionModel {
 
 export interface UnityCatalogFunctionModel {
   type: "unity_catalog";
-  name?: string; // Optional when using __MERGE__
-  schema?: SchemaModel;
+  resource?: FunctionModel | string; // Reference to FunctionModel in resources.functions
   partial_args?: Record<string, any>;
   human_in_the_loop?: HumanInTheLoopModel;
-  __MERGE__?: string; // For YAML merge syntax (<<: *func_ref)
 }
 
 export interface McpFunctionModel {
@@ -354,6 +358,7 @@ export interface SwarmModel {
   model: LLMModel;
   default_agent?: AgentModel | string;
   handoffs?: Record<string, (AgentModel | string)[] | null>;
+  middleware?: MiddlewareModel[];
 }
 
 export interface MemoryModel {
@@ -364,14 +369,16 @@ export interface MemoryModel {
 
 export interface CheckpointerModel {
   name: string;
-  type?: "postgres" | "memory";
+  // NOTE: type field removed in dao-ai 0.1.2
+  // Storage type is inferred: database provided → postgres, no database → memory
   database?: DatabaseModel;
 }
 
 export interface StoreModel {
   name: string;
   embedding_model?: LLMModel;
-  type?: "postgres" | "memory";
+  // NOTE: type field removed in dao-ai 0.1.2
+  // Storage type is inferred: database provided → postgres, no database → memory
   dims?: number;
   database?: DatabaseModel;
   namespace?: string;

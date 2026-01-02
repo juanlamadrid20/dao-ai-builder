@@ -1,5 +1,5 @@
 import { useState, ChangeEvent } from 'react';
-import { Plus, Trash2, Layers, Pencil, ChevronDown, ChevronUp } from 'lucide-react';
+import { Plus, Trash2, Layers, Edit2, ChevronDown, ChevronUp } from 'lucide-react';
 import { useConfigStore } from '@/stores/configStore';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
@@ -11,7 +11,6 @@ import Badge from '../ui/Badge';
 import { MiddlewareModel } from '@/types/dao-ai-types';
 import { normalizeRefNameWhileTyping } from '@/utils/name-utils';
 import { safeDelete } from '@/utils/safe-delete';
-import { useYamlScrollStore } from '@/stores/yamlScrollStore';
 
 // Helper to generate default reference name from factory function
 const generateDefaultRefName = (factoryFunction: string): string => {
@@ -226,7 +225,6 @@ export default function MiddlewareSection() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingMiddleware, setEditingMiddleware] = useState<string | null>(null);
   const [expandedMiddleware, setExpandedMiddleware] = useState<string | null>(null);
-  const { scrollToSection } = useYamlScrollStore();
   const [formData, setFormData] = useState<MiddlewareFormData>(defaultFormData);
 
   const middleware = config.middleware || {};
@@ -498,10 +496,6 @@ export default function MiddlewareSection() {
     setIsModalOpen(false);
   };
 
-  const handleCardClick = (key: string) => {
-    scrollToSection(`middleware.${key}`);
-  };
-
   const toggleExpanded = (key: string, e: React.MouseEvent) => {
     e.stopPropagation();
     setExpandedMiddleware(expandedMiddleware === key ? null : key);
@@ -552,6 +546,7 @@ export default function MiddlewareSection() {
         </Card>
       ) : (
         <div className="space-y-6">
+          {/* Render middleware by known categories */}
           {MIDDLEWARE_CATEGORIES.map(category => {
             // Filter middleware by category
             const categoryMiddleware = Object.entries(middleware).filter(([, mw]) => {
@@ -578,29 +573,26 @@ export default function MiddlewareSection() {
                     const isExpanded = expandedMiddleware === key;
                     
                     return (
-                      <Card 
-                        key={key} 
-                        variant="interactive"
-                        className="group cursor-pointer"
-                        onClick={() => handleCardClick(key)}
+                      <div
+                        key={key}
+                        className="p-3 bg-slate-800/50 rounded-lg border border-slate-700 cursor-pointer hover:bg-slate-800/70 transition-colors"
+                        onClick={() => handleEdit(key)}
                       >
-                        <div className="flex items-start justify-between">
+                        <div className="flex items-center justify-between">
                           <div className="flex items-start space-x-3 flex-1 min-w-0">
-                            <div className="w-10 h-10 rounded-lg bg-purple-500/20 flex items-center justify-center flex-shrink-0">
-                              <Layers className="w-5 h-5 text-purple-400" />
-                            </div>
+                            <Layers className="w-4 h-4 text-purple-400 flex-shrink-0 mt-1" />
                             <div className="flex-1 min-w-0">
                               <div className="flex items-center space-x-2 flex-wrap">
                                 <p className="font-medium text-slate-200 truncate">{key}</p>
+                                {refs.length > 0 && (
+                                  <Badge variant="warning">
+                                    {refs.length} ref{refs.length !== 1 ? 's' : ''}
+                                  </Badge>
+                                )}
                               </div>
-                              <p className="text-xs text-slate-500 mt-0.5 truncate">
+                              <p className="text-xs text-slate-500 truncate">
                                 {info?.label || 'Custom Factory'}
                               </p>
-                              {refs.length > 0 && (
-                                <Badge variant="warning" className="text-xs mt-1 inline-block">
-                                  {refs.length} reference{refs.length !== 1 ? 's' : ''}
-                                </Badge>
-                              )}
                             </div>
                           </div>
                           
@@ -622,17 +614,17 @@ export default function MiddlewareSection() {
                                 handleEdit(key);
                               }}
                             >
-                              <Pencil className="w-4 h-4" />
+                              <Edit2 className="w-4 h-4" />
                             </Button>
                             <Button
-                              variant="danger"
+                              variant="ghost"
                               size="sm"
                               onClick={(e: React.MouseEvent) => {
                                 e.stopPropagation();
                                 safeDelete('Middleware', key, () => removeMiddleware(key));
                               }}
                             >
-                              <Trash2 className="w-4 h-4" />
+                              <Trash2 className="w-4 h-4 text-red-400" />
                             </Button>
                           </div>
                         </div>
@@ -652,13 +644,125 @@ export default function MiddlewareSection() {
                             </div>
                           </div>
                         )}
-                      </Card>
+                      </div>
                     );
                   })}
                 </div>
               </div>
             );
           })}
+          
+          {/* Render middleware that don't match any known category (custom/other) */}
+          {(() => {
+            const uncategorizedMiddleware = Object.entries(middleware).filter(([, mw]) => {
+              const info = getMiddlewareInfo(mw.name);
+              return !info || !info.category;
+            });
+            
+            if (uncategorizedMiddleware.length === 0) return null;
+            
+            return (
+              <div>
+                <div className="flex items-center space-x-3 mb-3">
+                  <div className="h-px flex-1 bg-gradient-to-r from-transparent via-slate-700 to-transparent"></div>
+                  <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wide">
+                    Other
+                  </h3>
+                  <div className="h-px flex-1 bg-gradient-to-r from-transparent via-slate-700 to-transparent"></div>
+                </div>
+                
+                <div className="space-y-2">
+                  {uncategorizedMiddleware.map(([key, mw]) => {
+                    const refs = getReferences(key);
+                    const isExpanded = expandedMiddleware === key;
+                    
+                    // Extract a friendly label from the factory name
+                    const factoryLabel = mw.name.split('.').pop()?.replace(/^create_/, '').replace(/_/g, ' ').replace(/middleware$/i, '').trim() || 'Custom Factory';
+                    const displayLabel = factoryLabel.charAt(0).toUpperCase() + factoryLabel.slice(1);
+                    
+                    return (
+                      <div
+                        key={key}
+                        className="p-3 bg-slate-800/50 rounded-lg border border-slate-700 cursor-pointer hover:bg-slate-800/70 transition-colors"
+                        onClick={() => handleEdit(key)}
+                      >
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-start space-x-3 flex-1 min-w-0">
+                            <Layers className="w-4 h-4 text-orange-400 flex-shrink-0 mt-1" />
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center space-x-2 flex-wrap">
+                                <p className="font-medium text-slate-200 truncate">{key}</p>
+                                <Badge variant="info">Custom</Badge>
+                                {refs.length > 0 && (
+                                  <Badge variant="warning">
+                                    {refs.length} ref{refs.length !== 1 ? 's' : ''}
+                                  </Badge>
+                                )}
+                              </div>
+                              <p className="text-xs text-slate-500 truncate">
+                                {displayLabel}
+                              </p>
+                              <p className="text-xs text-slate-600 truncate font-mono">
+                                {mw.name}
+                              </p>
+                            </div>
+                          </div>
+                          
+                          <div className="flex items-center space-x-1 flex-shrink-0 ml-2">
+                            {mw.args && Object.keys(mw.args).length > 0 && (
+                              <button
+                                onClick={(e) => toggleExpanded(key, e)}
+                                className="p-1.5 text-slate-400 hover:text-slate-300 transition-colors"
+                                title={isExpanded ? "Collapse" : "Expand"}
+                              >
+                                {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                              </button>
+                            )}
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={(e: React.MouseEvent) => {
+                                e.stopPropagation();
+                                handleEdit(key);
+                              }}
+                            >
+                              <Edit2 className="w-4 h-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={(e: React.MouseEvent) => {
+                                e.stopPropagation();
+                                safeDelete('Middleware', key, () => removeMiddleware(key));
+                              }}
+                            >
+                              <Trash2 className="w-4 h-4 text-red-400" />
+                            </Button>
+                          </div>
+                        </div>
+                        
+                        {isExpanded && mw.args && Object.keys(mw.args).length > 0 && (
+                          <div className="mt-3 pt-3 border-t border-slate-700">
+                            <p className="text-xs font-medium text-slate-400 mb-2">Parameters:</p>
+                            <div className="space-y-1 max-h-32 overflow-y-auto">
+                              {Object.entries(mw.args).map(([argKey, argValue]) => (
+                                <div key={argKey} className="flex items-start space-x-2 text-xs">
+                                  <span className="text-slate-500 font-mono">{argKey}:</span>
+                                  <span className="text-slate-300 font-mono flex-1 break-all">
+                                    {typeof argValue === 'object' ? JSON.stringify(argValue) : String(argValue)}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
         </div>
       )}
 

@@ -34,6 +34,40 @@ function safeStartsWith(value: unknown, prefix: string): boolean {
 function safeString(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
+
+/**
+ * Extract the displayable string value from a VariableValue.
+ * Handles primitive strings, variable references, and env/secret objects.
+ */
+function getVariableDisplayValue(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (typeof value === 'object') {
+    const obj = value as Record<string, unknown>;
+    // Environment variable: { env: "VAR_NAME", default_value?: "xxx" }
+    if ('env' in obj && typeof obj.env === 'string') {
+      const defaultVal = obj.default_value;
+      if (defaultVal !== undefined && defaultVal !== null) {
+        return String(defaultVal);
+      }
+      return `$${obj.env}`;
+    }
+    // Secret variable: { scope: "xxx", secret: "yyy" }
+    if ('scope' in obj && 'secret' in obj) {
+      return `{{secrets/${obj.scope}/${obj.secret}}}`;
+    }
+    // Primitive variable: { type: "primitive", value: "xxx" }
+    if ('type' in obj && obj.type === 'primitive' && 'value' in obj) {
+      return String(obj.value);
+    }
+    // If it has a default_value, use that
+    if ('default_value' in obj && obj.default_value !== undefined) {
+      return String(obj.default_value);
+    }
+  }
+  return '';
+}
 import { 
   MessageSquare, 
   Table2, 
@@ -1053,22 +1087,51 @@ function GenieRoomsPanel({ showForm, setShowForm, editingKey, setEditingKey, onC
   const handleEdit = (key: string) => {
     scrollToAsset(key);
     const room = genieRooms[key];
-    const spaceId = safeString(room.space_id);
+    const spaceIdDisplay = getVariableDisplayValue(room.space_id);
     
-    // Detect if space_id is a variable reference (starts with *)
-    const isVariable = safeStartsWith(spaceId, '*');
-    const isInList = genieSpaces?.some(s => s.space_id === spaceId);
+    // Determine source type and extract appropriate values
+    let source: SpaceIdSource = 'manual';
+    let spaceIdValue = '';
+    let variableName = '';
+    
+    if (typeof room.space_id === 'string') {
+      // String value - check if it's a variable reference (starts with *)
+      if (safeStartsWith(room.space_id, '*')) {
+        source = 'variable';
+        variableName = room.space_id.substring(1);
+      } else {
+        // Check if it's in the list of available genie spaces
+        const isInList = genieSpaces?.some(s => s.space_id === room.space_id);
+        source = isInList ? 'select' : 'manual';
+        spaceIdValue = room.space_id;
+      }
+    } else if (typeof room.space_id === 'object' && room.space_id !== null) {
+      const obj = room.space_id as unknown as Record<string, unknown>;
+      // Env or secret variable object - treat as manual with the display value
+      // The env/secret object will be preserved when saving
+      if ('env' in obj) {
+        // Environment variable - use default_value if available, otherwise use env var notation
+        source = 'manual';
+        spaceIdValue = obj.default_value !== undefined ? String(obj.default_value) : spaceIdDisplay;
+      } else if ('secret' in obj) {
+        source = 'manual';
+        spaceIdValue = spaceIdDisplay;
+      } else {
+        source = 'manual';
+        spaceIdValue = spaceIdDisplay;
+      }
+    }
     
     // Parse authentication data
     const authData = parseResourceAuth(room, safeStartsWith, safeString);
     
-    setSpaceIdSource(isVariable ? 'variable' : (isInList ? 'select' : 'manual'));
+    setSpaceIdSource(source);
     setFormData({
       refName: key,
       name: room.name,
       description: room.description || '',
-      space_id: isVariable ? '' : spaceId,
-      space_id_variable: isVariable ? spaceId.substring(1) : '',
+      space_id: spaceIdValue,
+      space_id_variable: variableName,
       ...authData,
     });
     setEditingKey(key);
@@ -1165,7 +1228,7 @@ function GenieRoomsPanel({ showForm, setShowForm, editingKey, setEditingKey, onC
                 <div>
                   <p className="font-medium text-slate-200">{key}</p>
                   <p className="text-xs text-slate-500">
-                    {room.name} • Space ID: {room.space_id?.substring(0, 12)}...
+                    {room.name} • Space ID: {getVariableDisplayValue(room.space_id).substring(0, 12)}...
                   </p>
                 </div>
               </div>
@@ -3428,7 +3491,8 @@ function DatabasesPanel({ showForm, setShowForm, editingKey, setEditingKey, onCl
       setFormData({
         refName: key,
         name: db.name,
-        type: db.type || 'lakebase',
+        // Infer type from instance_name (Lakebase) or host (PostgreSQL)
+        type: db._uiType || (db.instance_name ? 'lakebase' : 'postgres'),
         instanceSource: 'existing',
         instance_name: db.instance_name || '',
         hostSource: isVariableRef(db.host) ? 'variable' : 'manual',
@@ -3474,9 +3538,12 @@ function DatabasesPanel({ showForm, setShowForm, editingKey, setEditingKey, onCl
   };
 
   const handleSave = () => {
+    // NOTE: type field removed in dao-ai 0.1.2 - type is inferred from instance_name vs host
+    // instance_name provided → Lakebase, host provided → PostgreSQL
     const db: DatabaseModel = {
       name: formData.name,
-      type: formData.type,
+      // _uiType is for UI display only, not included in YAML output
+      _uiType: formData.type,
       instance_name: formData.type === 'lakebase' ? (formData.instance_name || undefined) : undefined,
       host: formData.type === 'postgres' ? (getCredentialValue(formData.hostSource, formData.host, formData.hostVariable) || undefined) : undefined,
       description: formData.description || undefined,

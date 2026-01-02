@@ -85,7 +85,9 @@ export function MemorySection() {
     
     if (mem.checkpointer) {
       setCheckpointerEnabled(true);
-      setCheckpointerType(mem.checkpointer.type || 'memory');
+      // Infer type from database presence (dao-ai 0.1.2 pattern)
+      const inferredCheckpointerType = mem.checkpointer.database ? 'postgres' : 'memory';
+      setCheckpointerType(inferredCheckpointerType);
       setCheckpointerName(mem.checkpointer.name || 'default_checkpointer');
       setCheckpointerDatabase(findDatabaseKey(mem.checkpointer.database));
     } else {
@@ -97,7 +99,9 @@ export function MemorySection() {
     
     if (mem.store) {
       setStoreEnabled(true);
-      setStoreType(mem.store.type || 'memory');
+      // Infer type from database presence (dao-ai 0.1.2 pattern)
+      const inferredStoreType = mem.store.database ? 'postgres' : 'memory';
+      setStoreType(inferredStoreType);
       setStoreName(mem.store.name || 'default_store');
       setStoreDatabase(findDatabaseKey(mem.store.database));
       setStoreDims(mem.store.dims || 1536);
@@ -131,9 +135,10 @@ export function MemorySection() {
     };
     
     if (checkpointerEnabled) {
+      // NOTE: type field removed in dao-ai 0.1.2
+      // Storage type is inferred from database presence
       const checkpointer: CheckpointerModel = {
         name: checkpointerName,
-        type: checkpointerType,
       };
       
       if (checkpointerType === 'postgres' && checkpointerDatabase) {
@@ -147,9 +152,10 @@ export function MemorySection() {
     }
     
     if (storeEnabled) {
+      // NOTE: type field removed in dao-ai 0.1.2
+      // Storage type is inferred from database presence
       const store: StoreModel = {
         name: storeName,
-        type: storeType,
       };
       
       if (storeEmbeddingModel) {
@@ -218,10 +224,14 @@ export function MemorySection() {
   const getMemorySummary = (mem: MemoryModel): string => {
     const parts: string[] = [];
     if (mem.checkpointer) {
-      parts.push(`Checkpointer: ${mem.checkpointer.type || 'memory'}`);
+      // Infer type from database presence (dao-ai 0.1.2 pattern)
+      const checkpointerType = mem.checkpointer.database ? 'postgres' : 'memory';
+      parts.push(`Checkpointer: ${checkpointerType}`);
     }
     if (mem.store) {
-      parts.push(`Store: ${mem.store.type || 'memory'}`);
+      // Infer type from database presence (dao-ai 0.1.2 pattern)
+      const storeType = mem.store.database ? 'postgres' : 'memory';
+      parts.push(`Store: ${storeType}`);
     }
     return parts.join(' • ') || 'No components configured';
   };
@@ -278,13 +288,13 @@ export function MemorySection() {
             </div>
             <div className="flex items-center space-x-2">
               {memory.checkpointer && (
-                <Badge variant={memory.checkpointer.type === 'postgres' ? 'success' : 'warning'}>
+                <Badge variant={memory.checkpointer.database ? 'success' : 'warning'}>
                   <HardDrive className="w-3 h-3 mr-1" />
                   Checkpointer
                 </Badge>
               )}
               {memory.store && (
-                <Badge variant={memory.store.type === 'postgres' ? 'success' : 'warning'}>
+                <Badge variant={memory.store.database ? 'success' : 'warning'}>
                   <Database className="w-3 h-3 mr-1" />
                   Store
                 </Badge>

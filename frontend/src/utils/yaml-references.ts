@@ -298,6 +298,17 @@ export function getRequiredMergeAnchors(): string[] {
   return [...new Set(Object.values(currentReferences.mergeKeys))];
 }
 
+/**
+ * Get all anchor names that are required by alias references.
+ * These anchors MUST be present in the output YAML for aliases to work.
+ */
+export function getRequiredAliasAnchors(): string[] {
+  if (!currentReferences || !currentReferences.aliasUsage) return [];
+  
+  // Return all anchor names that have at least one alias usage
+  return Object.keys(currentReferences.aliasUsage);
+}
+
 export function shouldUseMergeKey(path: string): string | null {
   if (!currentReferences || !currentReferences.mergeKeys) return null;
   

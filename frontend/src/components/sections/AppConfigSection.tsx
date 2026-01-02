@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Settings, Save, GitBranch, Users, ArrowRightLeft, Plus, Trash2, Info, Bot, X, Tag, Wrench, Sparkles, Loader2, Variable } from 'lucide-react';
+import { Settings, Save, GitBranch, Users, ArrowRightLeft, Plus, Trash2, Info, Bot, X, Tag, Wrench, Sparkles, Loader2, Variable, Layers } from 'lucide-react';
 import { useConfigStore } from '@/stores/configStore';
 import { useCatalogs, useSchemas } from '@/hooks/useDatabricks';
 import Button from '../ui/Button';
@@ -8,6 +8,7 @@ import Select from '../ui/Select';
 import Textarea from '../ui/Textarea';
 import Card from '../ui/Card';
 import Badge from '../ui/Badge';
+import MultiSelect from '../ui/MultiSelect';
 import { LogLevel } from '@/types/dao-ai-types';
 import { clsx } from 'clsx';
 
@@ -281,6 +282,36 @@ export default function AppConfigSection() {
       return matchedKey || '';
     }).filter(Boolean);
   });
+
+  // Supervisor middleware state - stores middleware keys
+  const [supervisorMiddleware, setSupervisorMiddleware] = useState<string[]>(() => {
+    const existingMiddleware = config.app?.orchestration?.supervisor?.middleware;
+    if (!existingMiddleware || !Array.isArray(existingMiddleware)) return [];
+    
+    const middleware = config.middleware || {};
+    // Find the middleware keys that match the middleware names
+    return existingMiddleware.map(m => {
+      const middlewareName = typeof m === 'string' ? m : (m as any)?.name;
+      if (!middlewareName) return '';
+      const matchedKey = Object.entries(middleware).find(([, mw]) => (mw as any)?.name === middlewareName)?.[0];
+      return matchedKey || '';
+    }).filter(Boolean);
+  });
+
+  // Swarm middleware state - stores middleware keys
+  const [swarmMiddleware, setSwarmMiddleware] = useState<string[]>(() => {
+    const existingMiddleware = config.app?.orchestration?.swarm?.middleware;
+    if (!existingMiddleware || !Array.isArray(existingMiddleware)) return [];
+    
+    const middleware = config.middleware || {};
+    // Find the middleware keys that match the middleware names
+    return existingMiddleware.map(m => {
+      const middlewareName = typeof m === 'string' ? m : (m as any)?.name;
+      if (!middlewareName) return '';
+      const matchedKey = Object.entries(middleware).find(([, mw]) => (mw as any)?.name === middlewareName)?.[0];
+      return matchedKey || '';
+    }).filter(Boolean);
+  });
   
   // Memory reference for orchestration
   const [orchestrationMemoryRef, setOrchestrationMemoryRef] = useState<string>(() => {
@@ -371,6 +402,17 @@ export default function AppConfigSection() {
       }).filter(Boolean).sort();
       const currentSupervisorTools = [...supervisorTools].sort();
       if (JSON.stringify(savedSupervisorTools) !== JSON.stringify(currentSupervisorTools)) return true;
+      
+      // Check supervisor middleware
+      const configMiddleware = config.middleware || {};
+      const savedSupervisorMiddleware = (app?.orchestration?.supervisor?.middleware || []).map(m => {
+        const middlewareName = typeof m === 'string' ? m : (m as any)?.name;
+        if (!middlewareName) return '';
+        const matchedKey = Object.entries(configMiddleware).find(([, mw]) => (mw as any)?.name === middlewareName)?.[0];
+        return matchedKey || '';
+      }).filter(Boolean).sort();
+      const currentSupervisorMiddleware = [...supervisorMiddleware].sort();
+      if (JSON.stringify(savedSupervisorMiddleware) !== JSON.stringify(currentSupervisorMiddleware)) return true;
     } else if (pattern === 'swarm') {
       const savedLLMName = app?.orchestration?.swarm?.model?.name;
       const currentLLMName = selectedLLM ? llms[selectedLLM]?.name : '';
@@ -389,6 +431,17 @@ export default function AppConfigSection() {
         else currentHandoffsDict[h.agentName] = h.targets;
       });
       if (JSON.stringify(savedHandoffs) !== JSON.stringify(currentHandoffsDict)) return true;
+      
+      // Check swarm middleware
+      const swarmConfigMiddleware = config.middleware || {};
+      const savedSwarmMiddleware = (app?.orchestration?.swarm?.middleware || []).map(m => {
+        const middlewareName = typeof m === 'string' ? m : (m as any)?.name;
+        if (!middlewareName) return '';
+        const matchedKey = Object.entries(swarmConfigMiddleware).find(([, mw]) => (mw as any)?.name === middlewareName)?.[0];
+        return matchedKey || '';
+      }).filter(Boolean).sort();
+      const currentSwarmMiddleware = [...swarmMiddleware].sort();
+      if (JSON.stringify(savedSwarmMiddleware) !== JSON.stringify(currentSwarmMiddleware)) return true;
     }
     
     // Check orchestration memory reference
@@ -444,6 +497,12 @@ export default function AppConfigSection() {
       label: agents[key].name,
     })),
   ];
+
+  const middleware = config.middleware || {};
+  const middlewareOptions = Object.entries(middleware).map(([key]) => ({
+    value: key,
+    label: key,
+  }));
 
   const handoffTypeOptions = [
     { value: 'any', label: 'Any Agent (can hand off to all)' },
@@ -557,6 +616,20 @@ export default function AppConfigSection() {
       setSupervisorTools([]);
     }
     
+    // Sync supervisor middleware
+    const existingSupervisorMiddleware = app?.orchestration?.supervisor?.middleware;
+    if (existingSupervisorMiddleware && Array.isArray(existingSupervisorMiddleware)) {
+      const middlewareKeys = existingSupervisorMiddleware.map(m => {
+        const middlewareName = typeof m === 'string' ? m : (m as any)?.name;
+        if (!middlewareName) return '';
+        const matchedKey = Object.entries(middleware).find(([, mw]) => (mw as any)?.name === middlewareName)?.[0];
+        return matchedKey || '';
+      }).filter(Boolean);
+      setSupervisorMiddleware(middlewareKeys);
+    } else {
+      setSupervisorMiddleware([]);
+    }
+    
     // Sync swarm default agent
     const existingDefault = app?.orchestration?.swarm?.default_agent;
     if (typeof existingDefault === 'string') {
@@ -585,6 +658,20 @@ export default function AppConfigSection() {
       setHandoffs(newHandoffs);
     } else {
       setHandoffs([]);
+    }
+    
+    // Sync swarm middleware
+    const existingSwarmMiddleware = app?.orchestration?.swarm?.middleware;
+    if (existingSwarmMiddleware && Array.isArray(existingSwarmMiddleware)) {
+      const middlewareKeys = existingSwarmMiddleware.map(m => {
+        const middlewareName = typeof m === 'string' ? m : (m as any)?.name;
+        if (!middlewareName) return '';
+        const matchedKey = Object.entries(middleware).find(([, mw]) => (mw as any)?.name === middlewareName)?.[0];
+        return matchedKey || '';
+      }).filter(Boolean);
+      setSwarmMiddleware(middlewareKeys);
+    } else {
+      setSwarmMiddleware([]);
     }
     
     // Sync orchestration memory reference
@@ -750,11 +837,17 @@ export default function AppConfigSection() {
         .map(key => tools[key])
         .filter(Boolean);
       
+      // Build supervisor middleware array from selected middleware keys
+      const supervisorMiddlewareArray = supervisorMiddleware
+        .map(key => middleware[key])
+        .filter(Boolean);
+      
       orchestration = {
         supervisor: {
           model: llms[selectedLLM],
           ...(supervisorToolsArray.length > 0 && { tools: supervisorToolsArray }),
           ...(supervisorPrompt && { prompt: supervisorPrompt }),
+          ...(supervisorMiddlewareArray.length > 0 && { middleware: supervisorMiddlewareArray }),
         },
         // Add memory reference if configured
         ...(orchestrationMemoryRef && { memory: `*${orchestrationMemoryRef}` }),
@@ -771,11 +864,17 @@ export default function AppConfigSection() {
         }
       });
 
+      // Build swarm middleware array from selected middleware keys
+      const swarmMiddlewareArray = swarmMiddleware
+        .map(key => middleware[key])
+        .filter(Boolean);
+
       orchestration = {
         swarm: {
           model: llms[selectedLLM],
           ...(defaultAgent && agents[defaultAgent] && { default_agent: defaultAgent }),
           ...(Object.keys(handoffsDict).length > 0 && { handoffs: handoffsDict }),
+          ...(swarmMiddlewareArray.length > 0 && { middleware: swarmMiddlewareArray }),
         },
         // Add memory reference if configured
         ...(orchestrationMemoryRef && { memory: `*${orchestrationMemoryRef}` }),
@@ -1367,6 +1466,36 @@ export default function AppConfigSection() {
                     </div>
                   )}
                 </div>
+
+                {/* Supervisor Middleware Configuration */}
+                <div className="space-y-3 pt-3 border-t border-slate-700/50">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h4 className="text-sm font-medium text-slate-200 flex items-center gap-2">
+                        <Layers className="w-4 h-4 text-purple-400" />
+                        Supervisor Middleware
+                      </h4>
+                      <p className="text-xs text-slate-500">
+                        Assign middleware to customize supervisor execution behavior
+                      </p>
+                    </div>
+                  </div>
+
+                  {Object.keys(middleware).length === 0 ? (
+                    <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 text-amber-400 text-sm">
+                      No middleware configured. Add middleware in the Middleware section first.
+                    </div>
+                  ) : (
+                    <MultiSelect
+                      label="Select Middleware"
+                      options={middlewareOptions}
+                      value={supervisorMiddleware}
+                      onChange={(value) => setSupervisorMiddleware(value)}
+                      placeholder="Select middleware..."
+                      hint="Middleware to apply to the supervisor agent"
+                    />
+                  )}
+                </div>
               </>
             )}
 
@@ -1504,6 +1633,36 @@ export default function AppConfigSection() {
                       )}
                     </div>
                   ))}
+                </div>
+
+                {/* Swarm Middleware Configuration */}
+                <div className="space-y-3 pt-3 border-t border-slate-700/50">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h4 className="text-sm font-medium text-slate-200 flex items-center gap-2">
+                        <Layers className="w-4 h-4 text-purple-400" />
+                        Swarm Middleware
+                      </h4>
+                      <p className="text-xs text-slate-500">
+                        Assign middleware to apply across all agents in the swarm
+                      </p>
+                    </div>
+                  </div>
+
+                  {Object.keys(middleware).length === 0 ? (
+                    <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 text-amber-400 text-sm">
+                      No middleware configured. Add middleware in the Middleware section first.
+                    </div>
+                  ) : (
+                    <MultiSelect
+                      label="Select Middleware"
+                      options={middlewareOptions}
+                      value={swarmMiddleware}
+                      onChange={(value) => setSwarmMiddleware(value)}
+                      placeholder="Select middleware..."
+                      hint="Middleware to apply to the swarm orchestration"
+                    />
+                  )}
                 </div>
               </>
             )}
