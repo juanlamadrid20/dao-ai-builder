@@ -5,7 +5,25 @@ bundle:
 
 sync:
   include:
-    - frontend/dist/**
+    - app.py
+    - app.yaml
+    - main.py
+    - requirements.txt
+    - backend/**
+    - static/**
+    - schemas/**
+  exclude:
+    - frontend/**
+    - node_modules/**
+    - __pycache__/**
+    - "*.pyc"
+    - .git/**
+    - .databricks/**
+    - deploy.sh
+    - run.sh
+    - docs/**
+    - README.md
+    - "*.md"
 
 targets:
   default:

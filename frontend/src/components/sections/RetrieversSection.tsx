@@ -1,5 +1,5 @@
 import { useState, ChangeEvent } from 'react';
-import { Plus, Trash2, Edit2, Search, Layers, Filter, RefreshCw, X } from 'lucide-react';
+import { Plus, Trash2, Edit2, Search, Layers, Filter, X } from 'lucide-react';
 import { useConfigStore } from '@/stores/configStore';
 import { RetrieverModel, SearchParametersModel, RerankParametersModel } from '@/types/dao-ai-types';
 import Button from '../ui/Button';
@@ -434,92 +434,77 @@ export default function RetrieversSection() {
       </Button>
 
       {/* Retrievers List */}
-      <div className="space-y-3">
-        {Object.entries(retrievers).map(([key, retriever]) => (
-          <Card key={key} className="hover:border-slate-700 transition-colors">
-            <div className="flex items-start justify-between">
-              <div className="flex-1">
-                <div className="flex items-center gap-2">
-                  <h3 className="text-sm font-medium text-slate-200">{key}</h3>
-                  <Badge variant="info">
-                    <Filter className="w-3 h-3 mr-1" />
-                    {retriever.search_parameters?.num_results || 10} results
-                  </Badge>
-                  {retriever.search_parameters?.filters && Object.keys(retriever.search_parameters.filters).length > 0 && (
-                    <Badge variant="warning">
-                      {Object.keys(retriever.search_parameters.filters).length} filter{Object.keys(retriever.search_parameters.filters).length !== 1 ? 's' : ''}
+      {Object.keys(retrievers).length > 0 && (
+        <div className="space-y-2">
+          {Object.entries(retrievers).map(([key, retriever]) => (
+            <div
+              key={key}
+              className="flex items-center justify-between p-3 bg-slate-800/50 rounded-lg border border-slate-700 cursor-pointer hover:bg-slate-800/70 transition-colors"
+              onClick={() => handleEdit(key)}
+            >
+              <div className="flex items-center space-x-3">
+                <Search className="w-4 h-4 text-blue-400" />
+                <div>
+                  <div className="flex items-center gap-2">
+                    <p className="font-medium text-slate-200">{key}</p>
+                    <Badge variant="info">
+                      {retriever.search_parameters?.num_results || 10} results
                     </Badge>
-                  )}
-                  {retriever.rerank && (
-                    <Badge variant="success">
-                      <RefreshCw className="w-3 h-3 mr-1" />
-                      Reranking
-                    </Badge>
-                  )}
-                </div>
-                <div className="mt-2 space-y-1 text-xs text-slate-400">
-                  <p>
-                    <span className="text-slate-500">Query Type:</span>{' '}
+                    {retriever.search_parameters?.filters && Object.keys(retriever.search_parameters.filters).length > 0 && (
+                      <Badge variant="warning">
+                        {Object.keys(retriever.search_parameters.filters).length} filter{Object.keys(retriever.search_parameters.filters).length !== 1 ? 's' : ''}
+                      </Badge>
+                    )}
+                    {retriever.rerank && (
+                      <Badge variant="success">
+                        Rerank
+                      </Badge>
+                    )}
+                  </div>
+                  <p className="text-xs text-slate-500">
                     {retriever.search_parameters?.query_type || 'ANN'}
+                    {retriever.columns && retriever.columns.length > 0 && (
+                      <> • {retriever.columns.slice(0, 2).join(', ')}{retriever.columns.length > 2 && ` +${retriever.columns.length - 2}`}</>
+                    )}
                   </p>
-                  {retriever.columns && retriever.columns.length > 0 && (
-                    <p>
-                      <span className="text-slate-500">Columns:</span>{' '}
-                      {retriever.columns.slice(0, 3).join(', ')}
-                      {retriever.columns.length > 3 && ` +${retriever.columns.length - 3} more`}
-                    </p>
-                  )}
-                  {retriever.search_parameters?.filters && Object.keys(retriever.search_parameters.filters).length > 0 && (
-                    <p>
-                      <span className="text-slate-500">Filters:</span>{' '}
-                      {Object.entries(retriever.search_parameters.filters).slice(0, 2).map(([k, v]) => `${k}=${v}`).join(', ')}
-                      {Object.keys(retriever.search_parameters.filters).length > 2 && ` +${Object.keys(retriever.search_parameters.filters).length - 2} more`}
-                    </p>
-                  )}
-                  {retriever.rerank && typeof retriever.rerank === 'object' && (
-                    <p>
-                      <span className="text-slate-500">Rerank Model:</span>{' '}
-                      {retriever.rerank.model}
-                      {retriever.rerank.top_n && ` (top ${retriever.rerank.top_n})`}
-                    </p>
-                  )}
                 </div>
               </div>
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => handleEdit(key)}
+              <div className="flex items-center space-x-2">
+                <Button 
+                  variant="ghost" 
+                  size="sm" 
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleEdit(key);
+                  }}
                 >
-                  <Edit2 className="w-4 h-4 mr-1" />
-                  Edit
+                  <Edit2 className="w-4 h-4" />
                 </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => {
+                <Button 
+                  variant="ghost" 
+                  size="sm" 
+                  onClick={(e) => {
+                    e.stopPropagation();
                     safeDelete('Retriever', key, () => removeRetriever(key));
                   }}
-                  className="text-red-400 hover:text-red-300"
                 >
-                  <Trash2 className="w-4 h-4 mr-1" />
-                  Delete
+                  <Trash2 className="w-4 h-4 text-red-400" />
                 </Button>
               </div>
             </div>
-          </Card>
-        ))}
+          ))}
+        </div>
+      )}
 
-        {Object.keys(retrievers).length === 0 && hasVectorStores && (
-          <div className="text-center py-8 text-slate-500">
-            <Search className="w-12 h-12 mx-auto mb-3 opacity-50" />
-            <p>No retrievers configured yet</p>
-            <p className="text-xs mt-1">
-              Add a retriever to enable semantic search capabilities for your agents
-            </p>
-          </div>
-        )}
-      </div>
+      {Object.keys(retrievers).length === 0 && hasVectorStores && (
+        <div className="text-center py-8 text-slate-500">
+          <Search className="w-12 h-12 mx-auto mb-3 opacity-50" />
+          <p>No retrievers configured yet</p>
+          <p className="text-xs mt-1">
+            Add a retriever to enable semantic search capabilities for your agents
+          </p>
+        </div>
+      )}
 
       {/* Add/Edit Modal */}
       <Modal

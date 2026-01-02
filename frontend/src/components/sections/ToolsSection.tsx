@@ -1,5 +1,5 @@
 import { useState, ChangeEvent } from 'react';
-import { Plus, Trash2, Wrench, RefreshCw, Database, MessageSquare, Search, Clock, Bot, Link2, UserCheck, ChevronDown, ChevronUp, Pencil } from 'lucide-react';
+import { Plus, Trash2, Wrench, RefreshCw, Database, MessageSquare, Search, Clock, Bot, Link2, UserCheck, ChevronDown, ChevronUp, Pencil, Mail, Table2, Timer, Calculator } from 'lucide-react';
 import { useConfigStore } from '@/stores/configStore';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
@@ -18,6 +18,136 @@ import { getYamlReferences } from '@/utils/yaml-references';
 
 // Resource source toggle type
 type ResourceSource = 'configured' | 'select';
+
+// Credential source toggle type (for sensitive fields like passwords)
+type CredentialSource = 'manual' | 'variable';
+
+/**
+ * Extract the displayable string value from a VariableValue.
+ * Handles primitive strings, variable references, and env/secret objects.
+ */
+function getVariableDisplayValue(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (typeof value === 'object') {
+    const obj = value as Record<string, unknown>;
+    // Environment variable: { env: "VAR_NAME", default_value?: "xxx" }
+    if ('env' in obj && typeof obj.env === 'string') {
+      const defaultVal = obj.default_value;
+      if (defaultVal !== undefined && defaultVal !== null) {
+        return String(defaultVal);
+      }
+      return `$${obj.env}`;
+    }
+    // Secret variable: { scope: "xxx", secret: "yyy" }
+    if ('scope' in obj && 'secret' in obj) {
+      return `{{secrets/${obj.scope}/${obj.secret}}}`;
+    }
+    // Primitive variable: { type: "primitive", value: "xxx" }
+    if ('type' in obj && obj.type === 'primitive' && 'value' in obj) {
+      return String(obj.value);
+    }
+    // If it has a default_value, use that
+    if ('default_value' in obj && obj.default_value !== undefined) {
+      return String(obj.default_value);
+    }
+  }
+  return '';
+}
+
+// Credential input component with variable selection for sensitive fields
+interface CredentialInputProps {
+  label: string;
+  source: CredentialSource;
+  onSourceChange: (source: CredentialSource) => void;
+  manualValue: string;
+  onManualChange: (value: string) => void;
+  variableValue: string;
+  onVariableChange: (value: string) => void;
+  placeholder?: string;
+  type?: string;
+  hint?: string;
+  required?: boolean;
+  variables: Record<string, any>;
+}
+
+function CredentialInput({
+  label,
+  source,
+  onSourceChange,
+  manualValue,
+  onManualChange,
+  variableValue,
+  onVariableChange,
+  placeholder,
+  type = 'text',
+  hint,
+  required = false,
+  variables,
+}: CredentialInputProps) {
+  const variableNames = Object.keys(variables);
+  
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <label className="text-sm font-medium text-slate-300">
+          {label}
+          {required && <span className="text-red-400 ml-1">*</span>}
+        </label>
+        <div className="inline-flex rounded-lg bg-slate-900/50 p-0.5">
+          <button
+            type="button"
+            onClick={() => onSourceChange('variable')}
+            className={`px-3 py-1 text-xs rounded-md font-medium transition-all duration-150 ${
+              source === 'variable'
+                ? 'bg-violet-500/20 text-violet-400 border border-violet-500/40'
+                : 'text-slate-400 border border-transparent hover:text-slate-300'
+            }`}
+          >
+            Variable
+          </button>
+          <button
+            type="button"
+            onClick={() => onSourceChange('manual')}
+            className={`px-3 py-1 text-xs rounded-md font-medium transition-all duration-150 ${
+              source === 'manual'
+                ? 'bg-violet-500/20 text-violet-400 border border-violet-500/40'
+                : 'text-slate-400 border border-transparent hover:text-slate-300'
+            }`}
+          >
+            Manual
+          </button>
+        </div>
+      </div>
+      
+      {source === 'variable' ? (
+        <Select
+          value={variableValue}
+          onChange={(e: ChangeEvent<HTMLSelectElement>) => onVariableChange(e.target.value)}
+          options={[
+            { value: '', label: 'Select a variable...' },
+            ...variableNames.map((name) => ({
+              value: name,
+              label: name,
+            })),
+          ]}
+          hint={variableNames.length === 0 ? 'Define variables in the Variables section first' : hint}
+          required={required}
+        />
+      ) : (
+        <Input
+          value={manualValue}
+          onChange={(e: ChangeEvent<HTMLInputElement>) => onManualChange(e.target.value)}
+          placeholder={placeholder}
+          type={type}
+          hint={hint}
+          required={required}
+        />
+      )}
+    </div>
+  );
+}
 
 // Helper component for resource selection with toggle between configured and direct selection
 interface ResourceSelectorProps {
@@ -119,6 +249,24 @@ const FACTORY_TOOLS = [
     icon: Search,
   },
   { 
+    value: 'dao_ai.tools.create_search_tool', 
+    label: 'Web Search Tool',
+    description: 'Search the web using DuckDuckGo',
+    icon: Search,
+  },
+  { 
+    value: 'dao_ai.tools.create_execute_statement_tool', 
+    label: 'SQL Statement Tool',
+    description: 'Execute a pre-configured SQL statement against a warehouse',
+    icon: Table2,
+  },
+  { 
+    value: 'dao_ai.tools.create_send_email_tool', 
+    label: 'Email Tool',
+    description: 'Send emails via SMTP',
+    icon: Mail,
+  },
+  { 
     value: 'dao_ai.tools.create_send_slack_message_tool', 
     label: 'Slack Message Tool',
     description: 'Send messages to Slack channels',
@@ -142,21 +290,45 @@ const FACTORY_TOOLS = [
 const PYTHON_TOOLS = [
   { 
     value: 'dao_ai.tools.current_time_tool', 
-    label: 'Current Time Tool',
+    label: 'Current Time',
     description: 'Get the current date and time',
     icon: Clock,
   },
   { 
     value: 'dao_ai.tools.time_in_timezone_tool', 
-    label: 'Time in Timezone Tool',
+    label: 'Time in Timezone',
     description: 'Get time in a specific timezone',
     icon: Clock,
   },
   { 
-    value: 'dao_ai.tools.search_tool', 
-    label: 'Web Search Tool',
-    description: 'Search the web using DuckDuckGo',
-    icon: Search,
+    value: 'dao_ai.tools.add_time_tool', 
+    label: 'Add Time',
+    description: 'Add days, hours, or minutes to a datetime',
+    icon: Timer,
+  },
+  { 
+    value: 'dao_ai.tools.time_difference_tool', 
+    label: 'Time Difference',
+    description: 'Calculate the difference between two datetimes',
+    icon: Calculator,
+  },
+  { 
+    value: 'dao_ai.tools.is_business_hours_tool', 
+    label: 'Business Hours Check',
+    description: 'Check if a time falls within business hours',
+    icon: Clock,
+  },
+  { 
+    value: 'dao_ai.tools.format_time_tool', 
+    label: 'Format Time',
+    description: 'Format datetime strings in various formats',
+    icon: Clock,
+  },
+  { 
+    value: 'dao_ai.tools.time_until_tool', 
+    label: 'Time Until',
+    description: 'Calculate time remaining until a target datetime',
+    icon: Timer,
   },
   { 
     value: 'custom', 
@@ -188,7 +360,9 @@ const MCP_SOURCE_TYPES = [
 interface MCPFormData {
   sourceType: 'url' | 'genie' | 'vector_search' | 'functions' | 'sql' | 'connection';
   // URL source
-  url: string;
+  urlSource: 'manual' | 'variable';  // Manual entry or variable reference
+  url: string;  // Manual URL value
+  urlVariable: string;  // Variable name for URL
   // Genie source
   genieSource: ResourceSource;
   genieRefName: string; // Reference to configured genie room
@@ -235,7 +409,9 @@ interface MCPFormData {
 
 const defaultMCPFormData: MCPFormData = {
   sourceType: 'url',
+  urlSource: 'manual',
   url: '',
+  urlVariable: '',
   genieSource: 'select',
   genieRefName: '',
   genieSpaceId: '',
@@ -274,23 +450,17 @@ const defaultMCPFormData: MCPFormData = {
 interface HITLFormData {
   enabled: boolean;
   reviewPrompt: string;
-  allowAccept: boolean;
+  allowApprove: boolean;
   allowEdit: boolean;
-  allowRespond: boolean;
-  allowDecline: boolean;
-  declineMessage: string;
-  customActions: { key: string; value: string }[];
+  allowReject: boolean;
 }
 
 const defaultHITLFormData: HITLFormData = {
   enabled: false,
   reviewPrompt: 'Please review the tool call',
-  allowAccept: true,
+  allowApprove: true,
   allowEdit: true,
-  allowRespond: true,
-  allowDecline: true,
-  declineMessage: 'Tool call declined by user',
-  customActions: [],
+  allowReject: true,
 };
 
 // Helper function to generate a tool name from a function name
@@ -345,6 +515,11 @@ export default function ToolsSection() {
     genieSemanticCacheTtl: 86400, // 1 day in seconds
     genieSemanticCacheTtlNeverExpires: false,
     genieSemanticCacheSimilarityThreshold: 0.85,
+    genieSemanticCacheContextSimilarityThreshold: 0.80, // Conversation-aware: context similarity
+    genieSemanticCacheQuestionWeight: 0.6, // Conversation-aware: question weight
+    genieSemanticCacheContextWeight: 0.4, // Conversation-aware: context weight (computed as 1 - question_weight)
+    genieSemanticCacheContextWindowSize: 3, // Conversation-aware: number of previous turns
+    genieSemanticCacheMaxContextTokens: 2000, // Conversation-aware: max context length
     genieSemanticCacheEmbeddingModelSource: 'configured' as ResourceSource,
     genieSemanticCacheEmbeddingModelRefName: '',
     genieSemanticCacheEmbeddingModelManual: 'databricks-gte-large-en',
@@ -358,11 +533,20 @@ export default function ToolsSection() {
     warehouseSource: 'configured' as ResourceSource, // Default to configured
     warehouseRefName: '', // Reference to configured warehouse
     warehouseId: '',
-    // For Vector Search tool - with retriever source
+    // For Vector Search tool - source type toggle
+    vectorSearchSourceType: 'retriever' as 'retriever' | 'vector_store',
+    // Retriever source (full retriever with search params and reranking)
     retrieverSource: 'configured' as ResourceSource, // Default to configured
     retrieverRefName: '', // Reference to configured retriever
-    vectorEndpoint: '',
-    vectorIndex: '',
+    vectorEndpoint: '', // For manual retriever config
+    vectorIndex: '', // For manual retriever config
+    // Vector Store source (direct reference with default search params)
+    vectorStoreSource: 'configured' as ResourceSource,
+    vectorStoreRefName: '', // Reference to configured vector store
+    vsVectorEndpoint: '', // For manual vector store config
+    vsVectorIndex: '', // For manual vector store config
+    vsVectorCatalog: '',
+    vsVectorSchema: '',
     // For Unity Catalog function - with resource source
     schemaSource: 'configured' as ResourceSource, // Default to configured
     schemaRefName: '', // Reference to configured schema
@@ -384,6 +568,25 @@ export default function ToolsSection() {
     vectorSearchDescription: '',
     // For Unity Catalog tool - partial args
     ucPartialArgs: [] as PartialArgEntry[],
+    // For Email tool (create_send_email_tool)
+    emailHost: 'smtp.gmail.com',
+    emailHostSource: 'manual' as CredentialSource,
+    emailHostVariable: '',
+    emailPort: '587',
+    emailPortSource: 'manual' as CredentialSource,
+    emailPortVariable: '',
+    emailUsername: '',
+    emailUsernameSource: 'manual' as CredentialSource,
+    emailUsernameVariable: '',
+    emailPassword: '',
+    emailPasswordSource: 'manual' as CredentialSource,
+    emailPasswordVariable: '',
+    emailSenderEmail: '',
+    emailSenderEmailSource: 'manual' as CredentialSource,
+    emailSenderEmailVariable: '',
+    emailUseTls: true,
+    emailToolName: '',
+    emailToolDescription: '',
   });
   
   const [mcpForm, setMcpForm] = useState<MCPFormData>(defaultMCPFormData);
@@ -404,9 +607,12 @@ export default function ToolsSection() {
   const configuredDatabases = config.resources?.databases || {};
 
   // Helper functions to find configured resources by matching properties
-  const findConfiguredGenieRoom = (genieRoom: { space_id?: string; name?: string }): string | null => {
+  const findConfiguredGenieRoom = (genieRoom: { space_id?: unknown; name?: string }): string | null => {
     for (const [key, room] of Object.entries(configuredGenieRooms)) {
-      if (genieRoom.space_id && room.space_id === genieRoom.space_id) return key;
+      // Compare space_id values using their display values
+      const inputSpaceId = getVariableDisplayValue(genieRoom.space_id);
+      const roomSpaceId = getVariableDisplayValue(room.space_id);
+      if (inputSpaceId && roomSpaceId && inputSpaceId === roomSpaceId) return key;
       if (genieRoom.name && room.name === genieRoom.name) return key;
     }
     return null;
@@ -494,7 +700,7 @@ export default function ToolsSection() {
   // Build options for configured resources
   const configuredGenieOptions = Object.entries(configuredGenieRooms).map(([key, room]) => ({
     value: key,
-    label: `${key} (${room.name || room.space_id})`,
+    label: `${key} (${room.name || getVariableDisplayValue(room.space_id)})`,
   }));
   const configuredVectorStoreOptions = Object.entries(configuredVectorStores).map(([key, vs]) => ({
     value: key,
@@ -566,25 +772,15 @@ export default function ToolsSection() {
   const buildHITLConfig = (): HumanInTheLoopModel | undefined => {
     if (!hitlForm.enabled) return undefined;
 
-    const config: HumanInTheLoopModel = {
-      review_prompt: hitlForm.reviewPrompt,
-      interrupt_config: {
-        allow_accept: hitlForm.allowAccept,
-        allow_edit: hitlForm.allowEdit,
-        allow_respond: hitlForm.allowRespond,
-        allow_decline: hitlForm.allowDecline,
-      },
-      decline_message: hitlForm.declineMessage,
-    };
+    const allowedDecisions: ("approve" | "edit" | "reject")[] = [];
+    if (hitlForm.allowApprove) allowedDecisions.push("approve");
+    if (hitlForm.allowEdit) allowedDecisions.push("edit");
+    if (hitlForm.allowReject) allowedDecisions.push("reject");
 
-    if (hitlForm.customActions.length > 0) {
-      config.custom_actions = {};
-      hitlForm.customActions.forEach(action => {
-        if (action.key && action.value) {
-          config.custom_actions![action.key] = action.value;
-        }
-      });
-    }
+    const config: HumanInTheLoopModel = {
+      review_prompt: hitlForm.reviewPrompt || undefined,
+      allowed_decisions: allowedDecisions.length > 0 ? allowedDecisions : undefined,
+    };
 
     return config;
   };
@@ -624,7 +820,11 @@ export default function ToolsSection() {
 
     switch (mcpForm.sourceType) {
       case 'url':
-        base.url = mcpForm.url;
+        if (mcpForm.urlSource === 'variable' && mcpForm.urlVariable) {
+          base.url = `__REF__${mcpForm.urlVariable}`;
+        } else {
+          base.url = mcpForm.url;
+        }
         break;
       case 'genie':
         base.genie_room = {
@@ -729,6 +929,11 @@ export default function ToolsSection() {
           const semanticCacheParams: Record<string, unknown> = {
             time_to_live_seconds: formData.genieSemanticCacheTtlNeverExpires ? null : formData.genieSemanticCacheTtl,
             similarity_threshold: formData.genieSemanticCacheSimilarityThreshold,
+            context_similarity_threshold: formData.genieSemanticCacheContextSimilarityThreshold,
+            question_weight: formData.genieSemanticCacheQuestionWeight,
+            context_weight: formData.genieSemanticCacheContextWeight,
+            context_window_size: formData.genieSemanticCacheContextWindowSize,
+            max_context_tokens: formData.genieSemanticCacheMaxContextTokens,
             table_name: formData.genieSemanticCacheTableName,
           };
           // Add embedding model - configured LLM reference or manual string
@@ -755,20 +960,48 @@ export default function ToolsSection() {
 
         parsedArgs = genieArgs;
       } else if (formData.functionName === 'dao_ai.tools.create_vector_search_tool') {
-        // Vector search tool uses a retriever reference
-        if (formData.retrieverSource === 'configured' && formData.retrieverRefName) {
-        parsedArgs = {
-            name: formData.name,
-            ...(formData.vectorSearchDescription && { description: formData.vectorSearchDescription }),
-            retriever: `__REF__${formData.retrieverRefName}`,
-          };
-        } else {
-          // Direct selection - use specific fields (index name from endpoint)
-          parsedArgs = {
-            name: formData.name,
-            ...(formData.vectorSearchDescription && { description: formData.vectorSearchDescription }),
-          index_name: formData.vectorIndex,
+        // Vector search tool supports either retriever or vector_store (mutually exclusive)
+        const baseArgs: Record<string, unknown> = {
+          name: formData.name,
+          ...(formData.vectorSearchDescription && { description: formData.vectorSearchDescription }),
         };
+        
+        if (formData.vectorSearchSourceType === 'retriever') {
+          // Use retriever (full config with search params and reranking)
+          if (formData.retrieverSource === 'configured' && formData.retrieverRefName) {
+            parsedArgs = {
+              ...baseArgs,
+              retriever: `__REF__${formData.retrieverRefName}`,
+            };
+          } else {
+            // Direct selection - use specific fields (index name from endpoint)
+            parsedArgs = {
+              ...baseArgs,
+              index_name: formData.vectorIndex,
+            };
+          }
+        } else {
+          // Use vector_store directly (default search params)
+          if (formData.vectorStoreSource === 'configured' && formData.vectorStoreRefName) {
+            parsedArgs = {
+              ...baseArgs,
+              vector_store: `__REF__${formData.vectorStoreRefName}`,
+            };
+          } else {
+            // Direct selection - use vector store properties
+            parsedArgs = {
+              ...baseArgs,
+              vector_store: {
+                index: { name: formData.vsVectorIndex },
+                source_table: {
+                  schema: {
+                    catalog_name: formData.vsVectorCatalog,
+                    schema_name: formData.vsVectorSchema,
+                  },
+                },
+              },
+            };
+          }
         }
       } else if (formData.functionName === 'dao_ai.tools.create_send_slack_message_tool') {
         // Slack message tool configuration
@@ -801,6 +1034,55 @@ export default function ToolsSection() {
         }
         
         parsedArgs = agentArgs;
+      } else if (formData.functionName === 'dao_ai.tools.create_send_email_tool') {
+        // Email tool configuration with SMTP config
+        const smtpConfig: Record<string, unknown> = {};
+        
+        // Host - manual or variable
+        if (formData.emailHostSource === 'variable' && formData.emailHostVariable) {
+          smtpConfig.host = `*${formData.emailHostVariable}`;
+        } else {
+          smtpConfig.host = formData.emailHost;
+        }
+        
+        // Port - manual or variable
+        if (formData.emailPortSource === 'variable' && formData.emailPortVariable) {
+          smtpConfig.port = `*${formData.emailPortVariable}`;
+        } else {
+          smtpConfig.port = parseInt(formData.emailPort) || 587;
+        }
+        
+        // Username - manual or variable
+        if (formData.emailUsernameSource === 'variable' && formData.emailUsernameVariable) {
+          smtpConfig.username = `*${formData.emailUsernameVariable}`;
+        } else {
+          smtpConfig.username = formData.emailUsername;
+        }
+        
+        // Password - manual or variable
+        if (formData.emailPasswordSource === 'variable' && formData.emailPasswordVariable) {
+          smtpConfig.password = `*${formData.emailPasswordVariable}`;
+        } else {
+          smtpConfig.password = formData.emailPassword;
+        }
+        
+        // Sender email (optional) - manual or variable
+        if (formData.emailSenderEmail || formData.emailSenderEmailVariable) {
+          if (formData.emailSenderEmailSource === 'variable' && formData.emailSenderEmailVariable) {
+            smtpConfig.sender_email = `*${formData.emailSenderEmailVariable}`;
+          } else if (formData.emailSenderEmail) {
+            smtpConfig.sender_email = formData.emailSenderEmail;
+          }
+        }
+        
+        // Use TLS
+        smtpConfig.use_tls = formData.emailUseTls;
+        
+        parsedArgs = {
+          smtp_config: smtpConfig,
+          ...(formData.emailToolName && { name: formData.emailToolName }),
+          ...(formData.emailToolDescription && { description: formData.emailToolDescription }),
+        };
       } else {
         try {
           parsedArgs = JSON.parse(formData.args || '{}');
@@ -841,23 +1123,26 @@ export default function ToolsSection() {
         }
       }
 
-      // If using a configured function resource, use YAML merge reference
+      // dao-ai 0.1.2: Use 'resource' field instead of YAML merge (<<: *func_ref)
       if (formData.functionSource === 'configured' && formData.functionRefName) {
-      functionConfig = {
-        type: 'unity_catalog',
-          __MERGE__: formData.functionRefName, // Will be converted to <<: *ref in YAML
+        // Reference to configured function in resources.functions
+        functionConfig = {
+          type: 'unity_catalog',
+          resource: formData.functionRefName, // Will be converted to *ref in YAML
           ...(partialArgs && { partial_args: partialArgs }),
           ...(hitlConfig && { human_in_the_loop: hitlConfig }),
-      };
-    } else {
-        // Direct selection - include schema and name inline
-      functionConfig = {
+        };
+      } else {
+        // Direct selection - include inline FunctionModel resource
+        functionConfig = {
           type: 'unity_catalog',
-          schema: {
-            catalog_name: formData.ucCatalog,
-            schema_name: formData.ucSchema,
+          resource: {
+            schema: {
+              catalog_name: formData.ucCatalog,
+              schema_name: formData.ucSchema,
+            },
+            name: formData.ucFunction.split('.').pop() || formData.ucFunction, // Extract just the function name
           },
-          name: formData.ucFunction.split('.').pop() || formData.ucFunction, // Extract just the function name
           ...(partialArgs && { partial_args: partialArgs }),
           ...(hitlConfig && { human_in_the_loop: hitlConfig }),
         };
@@ -931,6 +1216,11 @@ export default function ToolsSection() {
       genieSemanticCacheTtl: 86400,
       genieSemanticCacheTtlNeverExpires: false,
       genieSemanticCacheSimilarityThreshold: 0.85,
+      genieSemanticCacheContextSimilarityThreshold: 0.80,
+      genieSemanticCacheQuestionWeight: 0.6,
+      genieSemanticCacheContextWeight: 0.4,
+      genieSemanticCacheContextWindowSize: 3,
+      genieSemanticCacheMaxContextTokens: 2000,
       genieSemanticCacheEmbeddingModelSource: 'configured',
       genieSemanticCacheEmbeddingModelRefName: '',
       genieSemanticCacheEmbeddingModelManual: 'databricks-gte-large-en',
@@ -943,10 +1233,17 @@ export default function ToolsSection() {
       warehouseSource: 'configured',
       warehouseRefName: '',
       warehouseId: '',
+      vectorSearchSourceType: 'retriever',
       retrieverSource: 'configured',
       retrieverRefName: '',
       vectorEndpoint: '',
       vectorIndex: '',
+      vectorStoreSource: 'configured',
+      vectorStoreRefName: '',
+      vsVectorEndpoint: '',
+      vsVectorIndex: '',
+      vsVectorCatalog: '',
+      vsVectorSchema: '',
       schemaSource: 'configured',
       schemaRefName: '',
       ucCatalog: '',
@@ -962,6 +1259,25 @@ export default function ToolsSection() {
       agentLlmRefName: '',
       vectorSearchDescription: '',
       ucPartialArgs: [],
+      // Email tool fields
+      emailHost: 'smtp.gmail.com',
+      emailHostSource: 'manual',
+      emailHostVariable: '',
+      emailPort: '587',
+      emailPortSource: 'manual',
+      emailPortVariable: '',
+      emailUsername: '',
+      emailUsernameSource: 'manual',
+      emailUsernameVariable: '',
+      emailPassword: '',
+      emailPasswordSource: 'manual',
+      emailPasswordVariable: '',
+      emailSenderEmail: '',
+      emailSenderEmailSource: 'manual',
+      emailSenderEmailVariable: '',
+      emailUseTls: true,
+      emailToolName: '',
+      emailToolDescription: '',
     });
     // Set MCP form defaults with proper source defaults based on configured resources
     const hasConfiguredConnections = Object.keys(configuredConnections).length > 0;
@@ -1015,19 +1331,14 @@ export default function ToolsSection() {
       // Handle HITL config
       if (func.human_in_the_loop) {
         const hitl = func.human_in_the_loop;
-        const interruptConfig = hitl.interrupt_config as Record<string, boolean> | undefined;
+        const allowedDecisions = hitl.allowed_decisions || ['approve', 'edit', 'reject'];
         setShowHitlConfig(true);
         setHitlForm({
           enabled: true,
           reviewPrompt: hitl.review_prompt || 'Please review the tool call',
-          allowAccept: interruptConfig?.allow_accept ?? true,
-          allowEdit: interruptConfig?.allow_edit ?? true,
-          allowRespond: interruptConfig?.allow_respond ?? true,
-          allowDecline: interruptConfig?.allow_decline ?? true,
-          declineMessage: hitl.decline_message || 'Tool call declined by user',
-          customActions: hitl.custom_actions 
-            ? Object.entries(hitl.custom_actions).map(([key, value]) => ({ key, value }))
-            : [],
+          allowApprove: allowedDecisions.includes('approve'),
+          allowEdit: allowedDecisions.includes('edit'),
+          allowReject: allowedDecisions.includes('reject'),
         });
       }
       
@@ -1053,17 +1364,51 @@ export default function ToolsSection() {
               genieRefName = matchingKey;
               genieSource = 'configured';
             } else if (genieRoom.space_id) {
-              genieSpaceId = genieRoom.space_id;
+              genieSpaceId = getVariableDisplayValue(genieRoom.space_id);
               genieSource = 'select';
             }
           }
         }
         
-        // Determine retriever config from args
+        // Determine vector search source type (retriever vs vector_store)
+        let vectorSearchSourceType: 'retriever' | 'vector_store' = 'retriever';
         let retrieverSource: ResourceSource = 'configured';
         let retrieverRefName = '';
         let vectorIndex = '';
-        if (args.retriever) {
+        let vectorStoreSource: ResourceSource = 'configured';
+        let vectorStoreRefName = '';
+        let vsVectorIndex = '';
+        let vsVectorCatalog = '';
+        let vsVectorSchema = '';
+        
+        if (args.vector_store) {
+          // Using vector_store directly
+          vectorSearchSourceType = 'vector_store';
+          if (typeof args.vector_store === 'string' && args.vector_store.startsWith('__REF__')) {
+            vectorStoreRefName = args.vector_store.replace('__REF__', '');
+            vectorStoreSource = 'configured';
+          } else if (typeof args.vector_store === 'object' && args.vector_store !== null) {
+            const vs = args.vector_store as { 
+              index?: { name?: string }; 
+              source_table?: { schema?: { catalog_name?: string; schema_name?: string } };
+            };
+            // Try to find a matching configured vector store
+            const matchingVsKey = Object.entries(configuredVectorStores).find(
+              ([, store]) => store.index?.name === vs.index?.name
+            )?.[0];
+            if (matchingVsKey) {
+              vectorStoreRefName = matchingVsKey;
+              vectorStoreSource = 'configured';
+            } else {
+              vectorStoreSource = 'select';
+              vsVectorIndex = vs.index?.name || '';
+              vsVectorCatalog = vs.source_table?.schema?.catalog_name || '';
+              vsVectorSchema = vs.source_table?.schema?.schema_name || '';
+            }
+          }
+        } else if (args.retriever) {
+          // Using retriever
+          vectorSearchSourceType = 'retriever';
           if (typeof args.retriever === 'string' && args.retriever.startsWith('__REF__')) {
             retrieverRefName = args.retriever.replace('__REF__', '');
             retrieverSource = 'configured';
@@ -1078,7 +1423,7 @@ export default function ToolsSection() {
             }
           }
         }
-        if (args.index_name && !retrieverRefName) {
+        if (args.index_name && !retrieverRefName && vectorSearchSourceType === 'retriever') {
           vectorIndex = args.index_name as string;
           retrieverSource = 'select';
         }
@@ -1100,6 +1445,93 @@ export default function ToolsSection() {
               slackConnectionSource = 'select';
             }
           }
+        }
+        
+        // Email tool SMTP config
+        let emailHost = 'smtp.gmail.com';
+        let emailHostSource: CredentialSource = 'manual';
+        let emailHostVariable = '';
+        let emailPort = '587';
+        let emailPortSource: CredentialSource = 'manual';
+        let emailPortVariable = '';
+        let emailUsername = '';
+        let emailUsernameSource: CredentialSource = 'manual';
+        let emailUsernameVariable = '';
+        let emailPassword = '';
+        let emailPasswordSource: CredentialSource = 'manual';
+        let emailPasswordVariable = '';
+        let emailSenderEmail = '';
+        let emailSenderEmailSource: CredentialSource = 'manual';
+        let emailSenderEmailVariable = '';
+        let emailUseTls = true;
+        let emailToolName = '';
+        let emailToolDescription = '';
+        
+        if (args.smtp_config) {
+          const smtpConfig = args.smtp_config as Record<string, unknown>;
+          
+          // Parse host
+          if (typeof smtpConfig.host === 'string') {
+            if (smtpConfig.host.startsWith('*')) {
+              emailHostSource = 'variable';
+              emailHostVariable = smtpConfig.host.substring(1);
+            } else {
+              emailHost = smtpConfig.host;
+            }
+          }
+          
+          // Parse port
+          if (smtpConfig.port) {
+            if (typeof smtpConfig.port === 'string' && smtpConfig.port.startsWith('*')) {
+              emailPortSource = 'variable';
+              emailPortVariable = smtpConfig.port.substring(1);
+            } else {
+              emailPort = String(smtpConfig.port);
+            }
+          }
+          
+          // Parse username
+          if (typeof smtpConfig.username === 'string') {
+            if (smtpConfig.username.startsWith('*')) {
+              emailUsernameSource = 'variable';
+              emailUsernameVariable = smtpConfig.username.substring(1);
+            } else {
+              emailUsername = smtpConfig.username;
+            }
+          }
+          
+          // Parse password
+          if (typeof smtpConfig.password === 'string') {
+            if (smtpConfig.password.startsWith('*')) {
+              emailPasswordSource = 'variable';
+              emailPasswordVariable = smtpConfig.password.substring(1);
+            } else {
+              emailPassword = smtpConfig.password;
+            }
+          }
+          
+          // Parse sender email (optional)
+          if (smtpConfig.sender_email) {
+            if (typeof smtpConfig.sender_email === 'string' && smtpConfig.sender_email.startsWith('*')) {
+              emailSenderEmailSource = 'variable';
+              emailSenderEmailVariable = smtpConfig.sender_email.substring(1);
+            } else {
+              emailSenderEmail = String(smtpConfig.sender_email);
+            }
+          }
+          
+          // Parse use_tls
+          if (typeof smtpConfig.use_tls === 'boolean') {
+            emailUseTls = smtpConfig.use_tls;
+          }
+        }
+        
+        // Parse tool name and description
+        if (args.name && typeof args.name === 'string') {
+          emailToolName = args.name;
+        }
+        if (args.description && typeof args.description === 'string') {
+          emailToolDescription = args.description;
         }
         
         // Agent endpoint LLM config
@@ -1168,6 +1600,11 @@ export default function ToolsSection() {
         let genieSemanticCacheTtl = 86400;
         let genieSemanticCacheTtlNeverExpires = false;
         let genieSemanticCacheSimilarityThreshold = 0.85;
+        let genieSemanticCacheContextSimilarityThreshold = 0.80;
+        let genieSemanticCacheQuestionWeight = 0.6;
+        let genieSemanticCacheContextWeight = 0.4;
+        let genieSemanticCacheContextWindowSize = 3;
+        let genieSemanticCacheMaxContextTokens = 2000;
         let genieSemanticCacheEmbeddingModelSource: ResourceSource = 'configured';
         let genieSemanticCacheEmbeddingModelRefName = '';
         let genieSemanticCacheEmbeddingModelManual = 'databricks-gte-large-en';
@@ -1187,6 +1624,11 @@ export default function ToolsSection() {
             genieSemanticCacheTtl = (semParams.time_to_live_seconds as number) ?? 86400;
           }
           genieSemanticCacheSimilarityThreshold = (semParams.similarity_threshold as number) ?? 0.85;
+          genieSemanticCacheContextSimilarityThreshold = (semParams.context_similarity_threshold as number) ?? 0.80;
+          genieSemanticCacheQuestionWeight = (semParams.question_weight as number) ?? 0.6;
+          genieSemanticCacheContextWeight = (semParams.context_weight as number) ?? 0.4;
+          genieSemanticCacheContextWindowSize = (semParams.context_window_size as number) ?? 3;
+          genieSemanticCacheMaxContextTokens = (semParams.max_context_tokens as number) ?? 2000;
           genieSemanticCacheTableName = (semParams.table_name as string) ?? 'genie_semantic_cache';
           
           // Extract embedding model - first check YAML references, then __REF__ marker, then match against configured LLMs
@@ -1295,6 +1737,11 @@ export default function ToolsSection() {
           genieSemanticCacheTtl,
           genieSemanticCacheTtlNeverExpires,
           genieSemanticCacheSimilarityThreshold,
+          genieSemanticCacheContextSimilarityThreshold,
+          genieSemanticCacheQuestionWeight,
+          genieSemanticCacheContextWeight,
+          genieSemanticCacheContextWindowSize,
+          genieSemanticCacheMaxContextTokens,
           genieSemanticCacheEmbeddingModelSource,
           genieSemanticCacheEmbeddingModelRefName,
           genieSemanticCacheEmbeddingModelManual,
@@ -1304,9 +1751,15 @@ export default function ToolsSection() {
           genieSemanticCacheWarehouseSource,
           genieSemanticCacheWarehouseRefName,
           genieSemanticCacheWarehouseId,
+          vectorSearchSourceType,
           retrieverSource,
           retrieverRefName,
           vectorIndex,
+          vectorStoreSource,
+          vectorStoreRefName,
+          vsVectorIndex,
+          vsVectorCatalog,
+          vsVectorSchema,
           vectorSearchDescription: args.description as string || '',
           slackConnectionSource,
           slackConnectionRefName,
@@ -1314,9 +1767,28 @@ export default function ToolsSection() {
           slackChannelName: args.channel_name as string || '',
           agentLlmSource,
           agentLlmRefName,
+          // Email tool fields
+          emailHost,
+          emailHostSource,
+          emailHostVariable,
+          emailPort,
+          emailPortSource,
+          emailPortVariable,
+          emailUsername,
+          emailUsernameSource,
+          emailUsernameVariable,
+          emailPassword,
+          emailPasswordSource,
+          emailPasswordVariable,
+          emailSenderEmail,
+          emailSenderEmailSource,
+          emailSenderEmailVariable,
+          emailUseTls,
+          emailToolName,
+          emailToolDescription,
         }));
       } else if (funcType === 'python') {
-        const funcName = func.name || '';
+        const funcName = 'name' in func ? func.name : '';
         const isKnownPython = PYTHON_TOOLS.some(pt => pt.value === funcName);
         
         setFormData(prev => ({
@@ -1329,10 +1801,10 @@ export default function ToolsSection() {
         }));
       } else if (funcType === 'unity_catalog') {
         // Cast to proper type for unity_catalog
-        const ucFunc = func as UnityCatalogFunctionModel & { __MERGE__?: string };
+        const ucFunc = func as UnityCatalogFunctionModel;
         
-        // Determine if using a merge key or direct schema/name
-        const mergeKey = ucFunc.__MERGE__;
+        // dao-ai 0.1.2: Use 'resource' field instead of __MERGE__
+        const resource = ucFunc.resource;
         const partialArgs = ucFunc.partial_args || {};
         
         // Convert partial_args to PartialArgEntry array
@@ -1363,25 +1835,29 @@ export default function ToolsSection() {
           };
         });
         
-        if (mergeKey) {
+        // Check if resource is a string reference
+        if (typeof resource === 'string') {
+          // It's a reference to a configured function
+          const refName = resource.startsWith('*') ? resource.slice(1) : resource;
           setFormData(prev => ({
             ...prev,
             refName: key, // YAML key (reference name)
             name: tool.name,
             type: 'unity_catalog',
             functionSource: 'configured',
-            functionRefName: mergeKey,
+            functionRefName: refName,
             ucPartialArgs,
           }));
-        } else {
-          // Direct schema/name - try to find a matching configured function first
-          const schema = ucFunc.schema;
-          const funcName = ucFunc.name || '';
+        } else if (resource && typeof resource === 'object') {
+          // Inline FunctionModel - try to find a matching configured function first
+          const resourceObj = resource as { schema?: { catalog_name?: string; schema_name?: string }; name?: string };
+          const schema = resourceObj.schema;
+          const funcName = resourceObj.name || '';
           
           // Try to find a matching configured function
           const matchingFuncKey = findConfiguredFunction({
             name: funcName,
-            schema: schema as { catalog_name?: string; schema_name?: string } | undefined,
+            schema: schema,
           });
           
           if (matchingFuncKey) {
@@ -1398,8 +1874,8 @@ export default function ToolsSection() {
           } else {
             // No match - use direct selection
             let fullFuncName = funcName;
-            if (schema && typeof schema === 'object' && 'catalog_name' in schema && 'schema_name' in schema) {
-              fullFuncName = `${(schema as { catalog_name: string }).catalog_name}.${(schema as { schema_name: string }).schema_name}.${funcName}`;
+            if (schema && 'catalog_name' in schema && 'schema_name' in schema) {
+              fullFuncName = `${schema.catalog_name}.${schema.schema_name}.${funcName}`;
             }
             
             setFormData(prev => ({
@@ -1412,9 +1888,20 @@ export default function ToolsSection() {
               ucPartialArgs,
             }));
           }
+        } else {
+          // No resource - empty UC function
+          setFormData(prev => ({
+            ...prev,
+            refName: key,
+            name: tool.name,
+            type: 'unity_catalog',
+            functionSource: 'select',
+            ucFunction: '',
+            ucPartialArgs,
+          }));
         }
       } else if (funcType === 'mcp') {
-        // MCP tool - this is complex, handle basic case
+        // MCP tool - handle all source types
         const mcpFunc = func as McpFunctionModel;
         setFormData(prev => ({
           ...prev,
@@ -1422,15 +1909,87 @@ export default function ToolsSection() {
           name: tool.name,
           type: 'mcp',
         }));
-        // Set MCP form data
-        if (mcpFunc.url) {
+        
+        // Determine source type and set MCP form data accordingly
+        if (mcpFunc.connection) {
+          // UC Connection source
+          const conn = mcpFunc.connection as any;
+          // Check if it's a reference (string starting with *) or an object
+          const isReference = typeof conn === 'string' && conn.startsWith('*');
+          const connName = isReference ? conn.slice(1) : (conn?.name || '');
+          
+          // Try to find matching configured connection
+          const matchingConnKey = Object.entries(configuredConnections).find(
+            ([connKey, c]) => {
+              if (isReference) {
+                return connKey === connName;
+              }
+              return (c as any).name === connName;
+            }
+          )?.[0];
+          
+          setMcpForm(prev => ({
+            ...prev,
+            sourceType: 'connection',
+            connectionSource: matchingConnKey ? 'configured' : 'select',
+            connectionRefName: matchingConnKey || '',
+            connectionName: matchingConnKey ? '' : connName,
+          }));
+        } else if (mcpFunc.genie_room) {
+          // Genie Room source
+          const genie = mcpFunc.genie_room as any;
+          const isReference = typeof genie === 'string' && genie.startsWith('*');
+          const genieId = isReference ? genie.slice(1) : '';
+          
+          // Try to find matching configured genie room
+          const genieSpaceIdValue = getVariableDisplayValue(genie?.space_id);
+          const matchingGenieKey = isReference ? genieId : 
+            Object.entries(configuredGenieRooms).find(
+              ([, g]) => getVariableDisplayValue((g as any).space_id) === genieSpaceIdValue || (g as any).name === genie?.name
+            )?.[0];
+          
+          setMcpForm(prev => ({
+            ...prev,
+            sourceType: 'genie',
+            genieSource: matchingGenieKey ? 'configured' : 'select',
+            genieRefName: matchingGenieKey || '',
+            genieSpaceId: !matchingGenieKey && genie?.space_id ? genieSpaceIdValue : '',
+            genieName: !matchingGenieKey && genie?.name ? genie.name : '',
+            genieDescription: !matchingGenieKey && genie?.description ? genie.description : '',
+          }));
+        } else if (mcpFunc.vector_search) {
+          // Vector Search source
+          setMcpForm(prev => ({
+            ...prev,
+            sourceType: 'vector_search',
+          }));
+        } else if (mcpFunc.functions) {
+          // UC Functions source
+          const schema = mcpFunc.functions as any;
+          setMcpForm(prev => ({
+            ...prev,
+            sourceType: 'functions',
+            functionsCatalog: schema?.catalog_name || '',
+            functionsSchema: schema?.schema_name || '',
+          }));
+        } else if (mcpFunc.sql) {
+          // SQL source
+          setMcpForm(prev => ({
+            ...prev,
+            sourceType: 'sql',
+          }));
+        } else if (mcpFunc.url) {
+          // Direct URL source
+          const urlStr = typeof mcpFunc.url === 'string' ? mcpFunc.url : '';
+          const isUrlVariable = urlStr.startsWith('__REF__');
           setMcpForm(prev => ({
             ...prev,
             sourceType: 'url',
-            url: mcpFunc.url || '',
+            urlSource: isUrlVariable ? 'variable' : 'manual',
+            url: isUrlVariable ? '' : urlStr,
+            urlVariable: isUrlVariable ? urlStr.substring(7) : '',
           }));
         }
-        // More MCP source types could be handled here
       }
     }
     
@@ -1545,7 +2104,9 @@ export default function ToolsSection() {
                         <p className="text-xs text-slate-500">name: {tool.name}</p>
                       )}
                     <p className="text-sm text-slate-400 font-mono">
-                      {typeof tool.function === 'object' ? tool.function.name : tool.function}
+                      {typeof tool.function === 'object' 
+                        ? ('name' in tool.function ? tool.function.name : `${tool.function.type}`)
+                        : tool.function}
                     </p>
                   </div>
                 </div>
@@ -1811,14 +2372,14 @@ export default function ToolsSection() {
                         <div className="ml-7 space-y-3 p-3 bg-slate-900/50 rounded-lg border border-slate-700/50">
                           <div className="grid grid-cols-2 gap-3">
                             <Input
-                              label="Similarity Threshold"
+                              label="Question Similarity Threshold"
                               type="number"
                               step="0.01"
                               min="0"
                               max="1"
                               value={formData.genieSemanticCacheSimilarityThreshold.toString()}
                               onChange={(e: ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, genieSemanticCacheSimilarityThreshold: parseFloat(e.target.value) || 0.85 })}
-                              hint="Min similarity for cache hit (0-1)"
+                              hint="Min similarity for question matching (0-1)"
                             />
                             <div className="space-y-2">
                               <label className="block text-sm font-medium text-slate-300">TTL (seconds)</label>
@@ -1842,6 +2403,62 @@ export default function ToolsSection() {
                               </label>
                             </div>
                           </div>
+                          
+                          {/* Conversation-Aware Caching Parameters */}
+                          <div className="space-y-3 p-3 bg-slate-800/30 rounded-lg border border-slate-700/30">
+                            <h5 className="text-xs font-semibold text-slate-300 uppercase tracking-wide">Conversation-Aware Settings</h5>
+                            <p className="text-xs text-slate-500">Cache considers conversation context, not just the current question</p>
+                            
+                            <div className="grid grid-cols-2 gap-3">
+                              <Input
+                                label="Context Similarity Threshold"
+                                type="number"
+                                step="0.01"
+                                min="0"
+                                max="1"
+                                value={formData.genieSemanticCacheContextSimilarityThreshold.toString()}
+                                onChange={(e: ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, genieSemanticCacheContextSimilarityThreshold: parseFloat(e.target.value) || 0.80 })}
+                                hint="Min similarity for conversation context (0-1)"
+                              />
+                              <Input
+                                label="Question Weight"
+                                type="number"
+                                step="0.01"
+                                min="0"
+                                max="1"
+                                value={formData.genieSemanticCacheQuestionWeight.toString()}
+                                onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                                  const qWeight = parseFloat(e.target.value) || 0.6;
+                                  setFormData({ 
+                                    ...formData, 
+                                    genieSemanticCacheQuestionWeight: qWeight,
+                                    genieSemanticCacheContextWeight: 1 - qWeight
+                                  });
+                                }}
+                                hint="Weight for question similarity. Context weight = 1 - this"
+                              />
+                              <Input
+                                label="Context Window Size"
+                                type="number"
+                                min="1"
+                                max="10"
+                                value={formData.genieSemanticCacheContextWindowSize.toString()}
+                                onChange={(e: ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, genieSemanticCacheContextWindowSize: parseInt(e.target.value) || 3 })}
+                                hint="Number of previous turns to include"
+                              />
+                              <Input
+                                label="Max Context Tokens"
+                                type="number"
+                                step="100"
+                                min="100"
+                                max="10000"
+                                value={formData.genieSemanticCacheMaxContextTokens.toString()}
+                                onChange={(e: ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, genieSemanticCacheMaxContextTokens: parseInt(e.target.value) || 2000 })}
+                                hint="Max tokens to prevent long embeddings"
+                              />
+                            </div>
+                          </div>
+                          
                           <ResourceSelector
                             label="Embedding Model"
                             resourceType="LLM"
@@ -1903,53 +2520,171 @@ export default function ToolsSection() {
               {formData.functionName === 'dao_ai.tools.create_vector_search_tool' && (
                 <div className="space-y-4 p-4 bg-slate-800/50 rounded-lg border border-slate-700">
                   <h4 className="text-sm font-medium text-slate-300">Vector Search Configuration</h4>
-                  <ResourceSelector
-                    label="Retriever"
-                    resourceType="Retriever"
-                    configuredOptions={configuredRetrieverOptions}
-                    configuredValue={formData.retrieverRefName}
-                    onConfiguredChange={(value) => setFormData({ 
-                      ...formData, 
-                      retrieverRefName: value, 
-                      vectorEndpoint: '', 
-                      vectorIndex: '' 
-                    })}
-                    source={formData.retrieverSource}
-                    onSourceChange={(source) => setFormData({ ...formData, retrieverSource: source })}
-                    hint={formData.retrieverSource === 'configured' ? 'Use a pre-configured retriever from the Retrievers section' : undefined}
-                  >
-                    <div className="space-y-4">
-                  <VectorSearchEndpointSelect
-                    label="Vector Search Endpoint"
-                    value={formData.vectorEndpoint}
-                        onChange={(value) => setFormData({ ...formData, vectorEndpoint: value, vectorIndex: '', retrieverRefName: '' })}
-                    required
-                  />
+                  
+                  {/* Source Type Toggle - Retriever or Vector Store */}
                   <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <label className="block text-sm font-medium text-slate-300">Vector Index</label>
-                      {formData.vectorEndpoint && (
-                        <button
-                          type="button"
-                          onClick={() => refetchIndexes()}
-                          className="text-xs text-slate-400 hover:text-white flex items-center space-x-1"
-                          disabled={vectorIndexesLoading}
-                        >
-                          <RefreshCw className={`w-3 h-3 ${vectorIndexesLoading ? 'animate-spin' : ''}`} />
-                          <span>Refresh</span>
-                        </button>
-                      )}
+                    <label className="text-xs font-medium text-slate-400">Source Type:</label>
+                    <div className="inline-flex rounded-lg bg-slate-900/50 p-0.5">
+                      <button
+                        type="button"
+                        onClick={() => setFormData({ ...formData, vectorSearchSourceType: 'retriever' })}
+                        className={`px-3 py-1.5 text-xs rounded-md font-medium transition-all duration-150 ${
+                          formData.vectorSearchSourceType === 'retriever'
+                            ? 'bg-teal-500/20 text-teal-400 border border-teal-500/40'
+                            : 'text-slate-400 border border-transparent hover:text-slate-300'
+                        }`}
+                      >
+                        Retriever
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setFormData({ ...formData, vectorSearchSourceType: 'vector_store' })}
+                        className={`px-3 py-1.5 text-xs rounded-md font-medium transition-all duration-150 ${
+                          formData.vectorSearchSourceType === 'vector_store'
+                            ? 'bg-teal-500/20 text-teal-400 border border-teal-500/40'
+                            : 'text-slate-400 border border-transparent hover:text-slate-300'
+                        }`}
+                      >
+                        Vector Store
+                      </button>
                     </div>
-                    <Select
-                      options={vectorIndexOptions}
-                      value={formData.vectorIndex}
-                          onChange={(e: ChangeEvent<HTMLSelectElement>) => setFormData({ ...formData, vectorIndex: e.target.value })}
-                      disabled={!formData.vectorEndpoint || vectorIndexesLoading}
-                      required
+                    <p className="text-xs text-slate-500">
+                      {formData.vectorSearchSourceType === 'retriever' 
+                        ? 'Retriever provides full search configuration with parameters and optional reranking'
+                        : 'Vector Store uses default search parameters for simpler configuration'
+                      }
+                    </p>
+                  </div>
+
+                  {/* Retriever Configuration */}
+                  {formData.vectorSearchSourceType === 'retriever' && (
+                    <ResourceSelector
+                      label="Retriever"
+                      resourceType="Retriever"
+                      configuredOptions={configuredRetrieverOptions}
+                      configuredValue={formData.retrieverRefName}
+                      onConfiguredChange={(value) => setFormData({ 
+                        ...formData, 
+                        retrieverRefName: value, 
+                        vectorEndpoint: '', 
+                        vectorIndex: '' 
+                      })}
+                      source={formData.retrieverSource}
+                      onSourceChange={(source) => setFormData({ ...formData, retrieverSource: source })}
+                      hint={formData.retrieverSource === 'configured' ? 'Use a pre-configured retriever from the Retrievers section' : undefined}
+                    >
+                      <div className="space-y-4">
+                        <VectorSearchEndpointSelect
+                          label="Vector Search Endpoint"
+                          value={formData.vectorEndpoint}
+                          onChange={(value) => setFormData({ ...formData, vectorEndpoint: value, vectorIndex: '', retrieverRefName: '' })}
+                          required
                         />
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <label className="block text-sm font-medium text-slate-300">Vector Index</label>
+                            {formData.vectorEndpoint && (
+                              <button
+                                type="button"
+                                onClick={() => refetchIndexes()}
+                                className="text-xs text-slate-400 hover:text-white flex items-center space-x-1"
+                                disabled={vectorIndexesLoading}
+                              >
+                                <RefreshCw className={`w-3 h-3 ${vectorIndexesLoading ? 'animate-spin' : ''}`} />
+                                <span>Refresh</span>
+                              </button>
+                            )}
+                          </div>
+                          <Select
+                            options={vectorIndexOptions}
+                            value={formData.vectorIndex}
+                            onChange={(e: ChangeEvent<HTMLSelectElement>) => setFormData({ ...formData, vectorIndex: e.target.value })}
+                            disabled={!formData.vectorEndpoint || vectorIndexesLoading}
+                            required
+                          />
+                        </div>
                       </div>
-                    </div>
-                  </ResourceSelector>
+                    </ResourceSelector>
+                  )}
+
+                  {/* Vector Store Configuration */}
+                  {formData.vectorSearchSourceType === 'vector_store' && (
+                    <ResourceSelector
+                      label="Vector Store"
+                      resourceType="Vector Store"
+                      configuredOptions={configuredVectorStoreOptions}
+                      configuredValue={formData.vectorStoreRefName}
+                      onConfiguredChange={(value) => setFormData({ 
+                        ...formData, 
+                        vectorStoreRefName: value, 
+                        vsVectorEndpoint: '', 
+                        vsVectorIndex: '',
+                        vsVectorCatalog: '',
+                        vsVectorSchema: ''
+                      })}
+                      source={formData.vectorStoreSource}
+                      onSourceChange={(source) => setFormData({ ...formData, vectorStoreSource: source })}
+                      hint={formData.vectorStoreSource === 'configured' ? 'Use a pre-configured vector store from the Resources section' : undefined}
+                    >
+                      <div className="space-y-4">
+                        <div className="grid grid-cols-2 gap-4">
+                          <CatalogSelect
+                            label="Catalog"
+                            value={formData.vsVectorCatalog}
+                            onChange={(value: string) => setFormData({ 
+                              ...formData, 
+                              vsVectorCatalog: value, 
+                              vsVectorSchema: '' 
+                            })}
+                            required
+                          />
+                          <SchemaSelect
+                            label="Schema"
+                            value={formData.vsVectorSchema}
+                            catalog={formData.vsVectorCatalog}
+                            onChange={(value: string) => setFormData({ 
+                              ...formData, 
+                              vsVectorSchema: value 
+                            })}
+                            required
+                          />
+                        </div>
+                        <VectorSearchEndpointSelect
+                          label="Vector Search Endpoint"
+                          value={formData.vsVectorEndpoint}
+                          onChange={(value) => setFormData({ 
+                            ...formData, 
+                            vsVectorEndpoint: value, 
+                            vsVectorIndex: '' 
+                          })}
+                          required
+                        />
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <label className="block text-sm font-medium text-slate-300">Vector Index</label>
+                            {formData.vsVectorEndpoint && (
+                              <button
+                                type="button"
+                                onClick={() => refetchIndexes()}
+                                className="text-xs text-slate-400 hover:text-white flex items-center space-x-1"
+                                disabled={vectorIndexesLoading}
+                              >
+                                <RefreshCw className={`w-3 h-3 ${vectorIndexesLoading ? 'animate-spin' : ''}`} />
+                                <span>Refresh</span>
+                              </button>
+                            )}
+                          </div>
+                          <Select
+                            options={vectorIndexOptions}
+                            value={formData.vsVectorIndex}
+                            onChange={(e: ChangeEvent<HTMLSelectElement>) => setFormData({ ...formData, vsVectorIndex: e.target.value })}
+                            disabled={!formData.vsVectorEndpoint || vectorIndexesLoading}
+                            required
+                          />
+                        </div>
+                      </div>
+                    </ResourceSelector>
+                  )}
                   
                   {/* Vector Search Options */}
                   <div className="pt-2 border-t border-slate-700">
@@ -2026,6 +2761,124 @@ export default function ToolsSection() {
                       Configure an LLM in the Resources section, then select it here
                     </p>
                   </ResourceSelector>
+                </div>
+              )}
+
+              {/* Email Tool Configuration */}
+              {formData.functionName === 'dao_ai.tools.create_send_email_tool' && (
+                <div className="space-y-4 p-4 bg-slate-800/50 rounded-lg border border-slate-700">
+                  <h4 className="text-sm font-medium text-slate-300">Email Tool Configuration</h4>
+                  
+                  <div className="space-y-3">
+                    <p className="text-sm text-slate-400">Configure SMTP settings for sending emails</p>
+                    
+                    {/* SMTP Host */}
+                    <CredentialInput
+                      label="SMTP Host"
+                      manualValue={formData.emailHost}
+                      onManualChange={(value) => setFormData({ ...formData, emailHost: value })}
+                      variableValue={formData.emailHostVariable}
+                      onVariableChange={(value) => setFormData({ ...formData, emailHostVariable: value })}
+                      source={formData.emailHostSource}
+                      onSourceChange={(source) => setFormData({ ...formData, emailHostSource: source })}
+                      placeholder="smtp.gmail.com"
+                      hint="SMTP server hostname"
+                      variables={variables}
+                    />
+                    
+                    {/* SMTP Port */}
+                    <CredentialInput
+                      label="SMTP Port"
+                      manualValue={formData.emailPort}
+                      onManualChange={(value) => setFormData({ ...formData, emailPort: value })}
+                      variableValue={formData.emailPortVariable}
+                      onVariableChange={(value) => setFormData({ ...formData, emailPortVariable: value })}
+                      source={formData.emailPortSource}
+                      onSourceChange={(source) => setFormData({ ...formData, emailPortSource: source })}
+                      placeholder="587"
+                      hint="SMTP server port (typically 587 for TLS)"
+                      variables={variables}
+                      type="number"
+                    />
+                    
+                    {/* SMTP Username */}
+                    <CredentialInput
+                      label="SMTP Username"
+                      manualValue={formData.emailUsername}
+                      onManualChange={(value) => setFormData({ ...formData, emailUsername: value })}
+                      variableValue={formData.emailUsernameVariable}
+                      onVariableChange={(value) => setFormData({ ...formData, emailUsernameVariable: value })}
+                      source={formData.emailUsernameSource}
+                      onSourceChange={(source) => setFormData({ ...formData, emailUsernameSource: source })}
+                      placeholder="user@example.com"
+                      hint="SMTP authentication username"
+                      variables={variables}
+                      required
+                    />
+                    
+                    {/* SMTP Password */}
+                    <CredentialInput
+                      label="SMTP Password"
+                      manualValue={formData.emailPassword}
+                      onManualChange={(value) => setFormData({ ...formData, emailPassword: value })}
+                      variableValue={formData.emailPasswordVariable}
+                      onVariableChange={(value) => setFormData({ ...formData, emailPasswordVariable: value })}
+                      source={formData.emailPasswordSource}
+                      onSourceChange={(source) => setFormData({ ...formData, emailPasswordSource: source })}
+                      placeholder="password or app-specific password"
+                      hint="SMTP authentication password (recommended: use a variable for security)"
+                      variables={variables}
+                      type="password"
+                      required
+                    />
+                    
+                    {/* Sender Email (Optional) */}
+                    <CredentialInput
+                      label="Sender Email (Optional)"
+                      manualValue={formData.emailSenderEmail}
+                      onManualChange={(value) => setFormData({ ...formData, emailSenderEmail: value })}
+                      variableValue={formData.emailSenderEmailVariable}
+                      onVariableChange={(value) => setFormData({ ...formData, emailSenderEmailVariable: value })}
+                      source={formData.emailSenderEmailSource}
+                      onSourceChange={(source) => setFormData({ ...formData, emailSenderEmailSource: source })}
+                      placeholder="bot@example.com (defaults to username)"
+                      hint="Email address to use as sender. If not provided, username will be used."
+                      variables={variables}
+                    />
+                    
+                    {/* Use TLS */}
+                    <div className="flex items-center space-x-2">
+                      <input
+                        type="checkbox"
+                        id="emailUseTls"
+                        checked={formData.emailUseTls}
+                        onChange={(e) => setFormData({ ...formData, emailUseTls: e.target.checked })}
+                        className="rounded border-slate-600 bg-slate-700 text-purple-500 focus:ring-purple-500"
+                      />
+                      <label htmlFor="emailUseTls" className="text-sm text-slate-300">
+                        Use TLS Encryption (Recommended)
+                      </label>
+                    </div>
+                    
+                    {/* Tool Name (Optional) */}
+                    <Input
+                      label="Tool Name (Optional)"
+                      value={formData.emailToolName}
+                      onChange={(e: ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, emailToolName: e.target.value })}
+                      placeholder="send_email"
+                      hint="Custom name for the email tool function"
+                    />
+                    
+                    {/* Tool Description (Optional) */}
+                    <Textarea
+                      label="Tool Description (Optional)"
+                      value={formData.emailToolDescription}
+                      onChange={(e: ChangeEvent<HTMLTextAreaElement>) => setFormData({ ...formData, emailToolDescription: e.target.value })}
+                      placeholder="Send an email to a recipient"
+                      rows={2}
+                      hint="Custom description for the email tool"
+                    />
+                  </div>
                 </div>
               )}
 
@@ -2475,18 +3328,21 @@ export default function ToolsSection() {
                       hint="Message shown to the reviewer"
                     />
 
-                    {/* Interrupt Config */}
+                    {/* Allowed Decisions */}
                     <div>
-                      <label className="block text-sm font-medium text-slate-300 mb-2">Allowed Actions</label>
-                      <div className="grid grid-cols-2 gap-2">
+                      <label className="block text-sm font-medium text-slate-300 mb-2">Allowed Decisions</label>
+                      <p className="text-xs text-slate-500 mb-3">
+                        Select which decision types the reviewer can choose from
+                      </p>
+                      <div className="grid grid-cols-3 gap-2">
                         <label className="flex items-center space-x-2 cursor-pointer">
                           <input
                             type="checkbox"
-                            checked={hitlForm.allowAccept}
-                            onChange={(e) => setHitlForm({ ...hitlForm, allowAccept: e.target.checked })}
+                            checked={hitlForm.allowApprove}
+                            onChange={(e) => setHitlForm({ ...hitlForm, allowApprove: e.target.checked })}
                             className="rounded border-slate-600 bg-slate-800 text-green-500 focus:ring-green-500"
                           />
-                          <span className="text-sm text-slate-400">Accept</span>
+                          <span className="text-sm text-slate-400">Approve</span>
                         </label>
                         <label className="flex items-center space-x-2 cursor-pointer">
                           <input
@@ -2500,89 +3356,17 @@ export default function ToolsSection() {
                         <label className="flex items-center space-x-2 cursor-pointer">
                           <input
                             type="checkbox"
-                            checked={hitlForm.allowRespond}
-                            onChange={(e) => setHitlForm({ ...hitlForm, allowRespond: e.target.checked })}
-                            className="rounded border-slate-600 bg-slate-800 text-yellow-500 focus:ring-yellow-500"
-                          />
-                          <span className="text-sm text-slate-400">Respond</span>
-                        </label>
-                        <label className="flex items-center space-x-2 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={hitlForm.allowDecline}
-                            onChange={(e) => setHitlForm({ ...hitlForm, allowDecline: e.target.checked })}
+                            checked={hitlForm.allowReject}
+                            onChange={(e) => setHitlForm({ ...hitlForm, allowReject: e.target.checked })}
                             className="rounded border-slate-600 bg-slate-800 text-red-500 focus:ring-red-500"
                           />
-                          <span className="text-sm text-slate-400">Decline</span>
+                          <span className="text-sm text-slate-400">Reject</span>
                         </label>
                       </div>
-                    </div>
-
-                    {/* Decline Message */}
-                    <Input
-                      label="Decline Message"
-                      value={hitlForm.declineMessage}
-                      onChange={(e: ChangeEvent<HTMLInputElement>) => setHitlForm({ ...hitlForm, declineMessage: e.target.value })}
-                      placeholder="Tool call declined by user"
-                      hint="Message returned when the user declines"
-                    />
-
-                    {/* Custom Actions */}
-                    <div className="space-y-2">
-                      <div className="flex items-center justify-between">
-                        <label className="block text-sm font-medium text-slate-300">Custom Actions</label>
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          type="button"
-                          onClick={() => setHitlForm({
-                            ...hitlForm,
-                            customActions: [...hitlForm.customActions, { key: '', value: '' }]
-                          })}
-                        >
-                          <Plus className="w-4 h-4 mr-1" />
-                          Add Action
-                        </Button>
-                      </div>
-                      {hitlForm.customActions.map((action, index) => (
-                        <div key={index} className="flex items-center space-x-2">
-                          <Input
-                            placeholder="Action key"
-                            value={action.key}
-                            onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                              const newActions = [...hitlForm.customActions];
-                              newActions[index].key = e.target.value;
-                              setHitlForm({ ...hitlForm, customActions: newActions });
-                            }}
-                            className="flex-1"
-                          />
-                          <Input
-                            placeholder="Action description"
-                            value={action.value}
-                            onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                              const newActions = [...hitlForm.customActions];
-                              newActions[index].value = e.target.value;
-                              setHitlForm({ ...hitlForm, customActions: newActions });
-                            }}
-                            className="flex-1"
-                          />
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            type="button"
-                            onClick={() => {
-                              setHitlForm({
-                                ...hitlForm,
-                                customActions: hitlForm.customActions.filter((_, i) => i !== index)
-                              });
-                            }}
-                          >
-                            <Trash2 className="w-4 h-4 text-red-400" />
-                          </Button>
-                        </div>
-                      ))}
-                      <p className="text-xs text-slate-500">
-                        Custom actions allow you to define additional buttons/responses for the reviewer.
+                      <p className="text-xs text-slate-500 mt-2">
+                        <strong>Approve:</strong> Execute with original arguments • 
+                        <strong> Edit:</strong> Modify arguments before execution • 
+                        <strong> Reject:</strong> Skip execution
                       </p>
                     </div>
                   </>
@@ -2624,14 +3408,68 @@ export default function ToolsSection() {
               {/* Source-specific configuration */}
               <div className="p-4 bg-slate-800/50 rounded-lg border border-slate-700 space-y-4">
                 {mcpForm.sourceType === 'url' && (
-            <Input
-                    label="MCP Server URL"
-                    placeholder="https://your-workspace.databricks.net/api/2.0/mcp/..."
-                    value={mcpForm.url}
-                    onChange={(e: ChangeEvent<HTMLInputElement>) => setMcpForm({ ...mcpForm, url: e.target.value })}
-                    hint="Full URL to the MCP server endpoint"
-              required
-            />
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <label className="text-sm font-medium text-slate-300">MCP Server URL</label>
+                      <div className="flex space-x-1">
+                        <button
+                          type="button"
+                          onClick={() => setMcpForm({ ...mcpForm, urlSource: 'manual', urlVariable: '' })}
+                          className={`px-2 py-1 text-xs rounded ${
+                            mcpForm.urlSource === 'manual' ? 'bg-blue-500/30 text-blue-300' : 'bg-slate-700 text-slate-400'
+                          }`}
+                        >
+                          Manual
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setMcpForm({ ...mcpForm, urlSource: 'variable', url: '' })}
+                          className={`px-2 py-1 text-xs rounded flex items-center space-x-1 ${
+                            mcpForm.urlSource === 'variable' ? 'bg-purple-500/30 text-purple-300' : 'bg-slate-700 text-slate-400'
+                          }`}
+                        >
+                          <span>Variable</span>
+                        </button>
+                      </div>
+                    </div>
+                    
+                    {mcpForm.urlSource === 'manual' && (
+                      <Input
+                        placeholder="https://your-workspace.databricks.net/api/2.0/mcp/..."
+                        value={mcpForm.url}
+                        onChange={(e: ChangeEvent<HTMLInputElement>) => setMcpForm({ ...mcpForm, url: e.target.value })}
+                        hint="Full URL to the MCP server endpoint"
+                        required
+                      />
+                    )}
+                    
+                    {mcpForm.urlSource === 'variable' && (
+                      <div className="space-y-2">
+                        {Object.keys(config.variables || {}).length > 0 ? (
+                          <Select
+                            value={mcpForm.urlVariable}
+                            onChange={(e: ChangeEvent<HTMLSelectElement>) => setMcpForm({ ...mcpForm, urlVariable: e.target.value })}
+                            options={[
+                              { value: '', label: 'Select a variable...' },
+                              ...Object.keys(config.variables || {}).map(name => ({
+                                value: name,
+                                label: name,
+                              })),
+                            ]}
+                          />
+                        ) : (
+                          <Input
+                            value={mcpForm.urlVariable}
+                            onChange={(e: ChangeEvent<HTMLInputElement>) => setMcpForm({ ...mcpForm, urlVariable: e.target.value })}
+                            placeholder="mcp_server_url"
+                          />
+                        )}
+                        <p className="text-xs text-slate-500">
+                          Reference a variable containing the MCP server URL
+                        </p>
+                      </div>
+                    )}
+                  </div>
                 )}
 
                 {mcpForm.sourceType === 'genie' && (

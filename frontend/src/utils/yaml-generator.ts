@@ -1,6 +1,6 @@
 import yaml from 'js-yaml';
 import { AppConfig, VariableModel, DatabaseModel, OrchestrationModel, ToolFunctionModel, HumanInTheLoopModel } from '@/types/dao-ai-types';
-import { getYamlReferences, getOriginalAnchorName, shouldUseMergeKey, getRequiredMergeAnchors, setSectionAnchor, getSectionAnchor, clearSectionAnchors } from './yaml-references';
+import { getYamlReferences, getOriginalAnchorName, getRequiredMergeAnchors, getRequiredAliasAnchors, setSectionAnchor, getSectionAnchor, clearSectionAnchors } from './yaml-references';
 
 /**
  * Safely check if a value is a string that starts with a prefix.
@@ -35,6 +35,7 @@ function addYamlAnchors(yamlString: string): string {
     'retrievers',
     'tools',
     'guardrails',
+    'middleware',
     'prompts',
     'agents',
   ];
@@ -191,26 +192,28 @@ function addYamlAnchors(yamlString: string): string {
           const fullPath = `${pathPrefix}.${keyName}`;
           const originalAnchor = getOriginalAnchorName(fullPath);
           
-          // Get anchors that are REQUIRED by merge keys (<<: *anchor)
+          // Get anchors that are REQUIRED by merge keys (<<: *anchor) or alias references (*anchor)
           // These must be present even for normally skipped sections
           const requiredMergeAnchors = getRequiredMergeAnchors();
+          const requiredAliasAnchors = getRequiredAliasAnchors();
           const isRequiredByMerge = requiredMergeAnchors.includes(keyName);
+          const isRequiredByAlias = requiredAliasAnchors.includes(keyName);
           
           // Resource sections that rarely need anchors (they're source data, not references)
-          // Only add anchor if it was in the original YAML OR required by a merge key
-          const noAutoAnchorSections = ['tables', 'volumes', 'functions'];
+          // Only add anchor if it was in the original YAML OR required by a merge key OR required by an alias
+          const noAutoAnchorSections = ['tables', 'volumes'];
           
           if (originalAnchor) {
             // Preserve the original anchor from imported YAML
             lines[i] = `${indent}${keyName}: &${originalAnchor}`;
-          } else if (isRequiredByMerge) {
-            // This anchor is required by a merge key - MUST add it
+          } else if (isRequiredByMerge || isRequiredByAlias) {
+            // This anchor is required by a merge key or alias reference - MUST add it
             lines[i] = `${indent}${keyName}: &${keyName}`;
           } else if (noAutoAnchorSections.includes(section.name)) {
-            // Don't auto-add anchors to tables/volumes/functions - they're rarely referenced
+            // Don't auto-add anchors to tables/volumes - they're rarely referenced
             // Leave the line as-is (no anchor)
           } else {
-            // For other sections (tools, agents, schemas, etc.), add anchor using key name
+            // For other sections (tools, agents, schemas, functions, etc.), add anchor using key name
             lines[i] = `${indent}${keyName}: &${keyName}`;
           }
         }
@@ -593,7 +596,7 @@ function formatVolumePath(
  * Format orchestration configuration for YAML output.
  * Handles swarm handoffs where null means "any agent" and [] means "no handoffs".
  */
-function formatOrchestration(orchestration: OrchestrationModel, definedLLMs: Record<string, any>, definedTools: Record<string, any>): any {
+function formatOrchestration(orchestration: OrchestrationModel, definedLLMs: Record<string, any>, definedTools: Record<string, any>, definedMiddleware: Record<string, any>): any {
   const result: any = {};
   
   if (orchestration.supervisor) {
@@ -633,12 +636,51 @@ function formatOrchestration(orchestration: OrchestrationModel, definedLLMs: Rec
       });
     }
     
+    // Format supervisor middleware as references
+    let supervisorMiddlewareValue: string[] | undefined;
+    if (orchestration.supervisor.middleware && orchestration.supervisor.middleware.length > 0) {
+      supervisorMiddlewareValue = orchestration.supervisor.middleware.map((mw: any) => {
+        // Strategy 1: If it's already a string reference, use it
+        if (typeof mw === 'string') {
+          return mw.startsWith('*') ? createReference(mw.slice(1)) : createReference(mw);
+        }
+        
+        // Strategy 2: If it's an object, find the matching key by name
+        const middlewareName = typeof mw === 'string' ? mw : mw?.name;
+        if (middlewareName) {
+          const matchedByName = Object.entries(definedMiddleware).find(
+            ([, m]) => (m as any).name === middlewareName
+          );
+          if (matchedByName) {
+            return createReference(matchedByName[0]);
+          }
+        }
+        
+        // Strategy 3: Find by deep comparison of the full middleware object
+        const middlewareObj = typeof mw === 'object' ? mw : null;
+        if (middlewareObj) {
+          const matchedByObject = Object.entries(definedMiddleware).find(
+            ([, m]) => JSON.stringify(m as any) === JSON.stringify(middlewareObj)
+          );
+          if (matchedByObject) {
+            return createReference(matchedByObject[0]);
+          }
+        }
+        
+        // Fallback: use the middleware name
+        return createReference(middlewareName || 'middleware');
+      });
+    }
+    
     result.supervisor = {
       model: formatModelReference(orchestration.supervisor.model, definedLLMs, 'orchestration.supervisor.model'),
       ...(supervisorToolsValue && supervisorToolsValue.length > 0 && { 
         tools: supervisorToolsValue 
       }),
       ...(orchestration.supervisor.prompt && { prompt: orchestration.supervisor.prompt }),
+      ...(supervisorMiddlewareValue && supervisorMiddlewareValue.length > 0 && {
+        middleware: supervisorMiddlewareValue
+      }),
     };
   }
   
@@ -678,6 +720,45 @@ function formatOrchestration(orchestration: OrchestrationModel, definedLLMs: Rec
         }
       });
     }
+    
+    // Format swarm middleware as references
+    if (orchestration.swarm.middleware && orchestration.swarm.middleware.length > 0) {
+      const swarmMiddlewareValue = orchestration.swarm.middleware.map((mw: any) => {
+        // Strategy 1: If it's already a string reference, use it
+        if (typeof mw === 'string') {
+          return mw.startsWith('*') ? createReference(mw.slice(1)) : createReference(mw);
+        }
+        
+        // Strategy 2: If it's an object, find the matching key by name
+        const middlewareName = typeof mw === 'string' ? mw : mw?.name;
+        if (middlewareName) {
+          const matchedByName = Object.entries(definedMiddleware).find(
+            ([, m]) => (m as any).name === middlewareName
+          );
+          if (matchedByName) {
+            return createReference(matchedByName[0]);
+          }
+        }
+        
+        // Strategy 3: Find by deep comparison of the full middleware object
+        const middlewareObj = typeof mw === 'object' ? mw : null;
+        if (middlewareObj) {
+          const matchedByObject = Object.entries(definedMiddleware).find(
+            ([, m]) => JSON.stringify(m as any) === JSON.stringify(middlewareObj)
+          );
+          if (matchedByObject) {
+            return createReference(matchedByObject[0]);
+          }
+        }
+        
+        // Fallback: use the middleware name
+        return createReference(middlewareName || 'middleware');
+      });
+      
+      if (swarmMiddlewareValue.length > 0) {
+        result.swarm.middleware = swarmMiddlewareValue;
+      }
+    }
   }
   
   // Handle memory - can be a string reference like '*memory' or a MemoryModel object
@@ -711,11 +792,9 @@ function formatOrchestration(orchestration: OrchestrationModel, definedLLMs: Rec
  */
 function formatHITL(hitl: HumanInTheLoopModel): any {
   return {
-    review_prompt: hitl.review_prompt,
-    ...(hitl.interrupt_config && { interrupt_config: hitl.interrupt_config }),
-    ...(hitl.decline_message && { decline_message: hitl.decline_message }),
-    ...(hitl.custom_actions && Object.keys(hitl.custom_actions).length > 0 && { 
-      custom_actions: hitl.custom_actions 
+    ...(hitl.review_prompt && { review_prompt: hitl.review_prompt }),
+    ...(hitl.allowed_decisions && hitl.allowed_decisions.length > 0 && { 
+      allowed_decisions: hitl.allowed_decisions 
     }),
   };
 }
@@ -725,8 +804,9 @@ function formatHITL(hitl: HumanInTheLoopModel): any {
  * Handles all function types: python, factory, unity_catalog, mcp, and string references.
  * @param func - The tool function model
  * @param toolKey - Optional tool key for looking up original references
+ * @param definedConnections - Optional map of defined connections for reference resolution
  */
-function formatToolFunction(func: ToolFunctionModel, toolKey?: string): any {
+function formatToolFunction(func: ToolFunctionModel, toolKey?: string, definedConnections?: Record<string, any>): any {
   if (typeof func === 'string') {
     return func;
   }
@@ -735,8 +815,9 @@ function formatToolFunction(func: ToolFunctionModel, toolKey?: string): any {
     type: func.type,
   };
 
-  // Add name only if not using YAML merge
-  if (!('__MERGE__' in func)) {
+  // Add name only if not using YAML merge and function type has name property
+  // Note: UnityCatalogFunctionModel doesn't have a name property (it uses resource instead)
+  if (!('__MERGE__' in func) && func.type !== 'unity_catalog' && 'name' in func) {
     result.name = func.name;
   }
 
@@ -753,26 +834,47 @@ function formatToolFunction(func: ToolFunctionModel, toolKey?: string): any {
   }
 
   if (func.type === 'unity_catalog') {
-    // Check if this function should use a merge key (<<: *anchor_name)
-    const functionPath = toolKey ? `tools.${toolKey}.function` : 'function';
-    const mergeAnchor = shouldUseMergeKey(functionPath);
+    // New dao-ai 0.1.2 format: use 'resource' field instead of YAML merge (<<: *func_ref)
+    // Format: function: { type: unity_catalog, resource: *func_ref, partial_args: {} }
     
-    // If using YAML merge reference (<<: *func_ref)
-    if (mergeAnchor) {
-      // Use the original merge key
-      result.__MERGE__ = mergeAnchor;
-      // Remove name since it comes from the merged reference
-      delete result.name;
-    } else if ('__MERGE__' in func && (func as any).__MERGE__) {
-      result.__MERGE__ = (func as any).__MERGE__;
-      // Remove name since it comes from the merged reference
-      delete result.name;
-    } else if ('schema' in func && func.schema) {
-      // Inline schema and name
-      result.schema = func.schema;
-      result.name = func.name;
+    // Remove name - it's not part of UnityCatalogFunctionModel, name is in ToolModel
+    delete result.name;
+    
+    // Handle resource reference
+    if ('resource' in func && func.resource) {
+      const resource = func.resource;
+      if (typeof resource === 'string') {
+        // Already a reference string
+        if (resource.startsWith('*')) {
+          result.resource = createReference(resource.slice(1));
+        } else {
+          result.resource = createReference(resource);
+        }
+      } else {
+        // Check if it was originally a reference in imported YAML
+        const resourcePath = toolKey ? `tools.${toolKey}.function.resource` : 'function.resource';
+        const originalRef = findOriginalReference(resourcePath, resource);
+        if (originalRef) {
+          result.resource = createReference(originalRef);
+        } else {
+          // Inline FunctionModel - format as inline object
+          const inlineResource: Record<string, any> = {};
+          if (resource.schema) {
+            inlineResource.schema = resource.schema;
+          }
+          if (resource.name) {
+            inlineResource.name = resource.name;
+          }
+          if (resource.on_behalf_of_user) {
+            inlineResource.on_behalf_of_user = resource.on_behalf_of_user;
+          }
+          result.resource = inlineResource;
+        }
+      }
     }
-    if ('partial_args' in func && func.partial_args) {
+    
+    // Handle partial_args
+    if ('partial_args' in func && func.partial_args && Object.keys(func.partial_args).length > 0) {
       // Check each partial_arg for original references
       const processedPartialArgs: Record<string, any> = {};
       for (const [argKey, argValue] of Object.entries(func.partial_args)) {
@@ -826,7 +928,27 @@ function formatToolFunction(func: ToolFunctionModel, toolKey?: string): any {
       if (typeof conn === 'string' && conn.startsWith('*')) {
         result.connection = createReference(conn.slice(1));
       } else {
-        result.connection = conn;
+        // Check if connection was originally a reference in imported YAML
+        const connRef = toolKey ? findOriginalReference(`tools.${toolKey}.function.connection`, conn) : null;
+        if (connRef) {
+          result.connection = createReference(connRef);
+        } else {
+          // Try to match by name against defined connections
+          // This handles the case where YAML aliases were resolved on import
+          const connName = typeof conn === 'object' && conn.name ? conn.name : null;
+          if (connName && definedConnections) {
+            const matchingConnKey = Object.entries(definedConnections).find(
+              ([, c]) => (c as any).name === connName
+            )?.[0];
+            if (matchingConnKey) {
+              result.connection = createReference(matchingConnKey);
+            } else {
+              result.connection = conn;
+            }
+          } else {
+            result.connection = conn;
+          }
+        }
       }
     }
     if ('functions' in func && func.functions) result.functions = func.functions;
@@ -874,7 +996,18 @@ function formatDatabaseRef(database: DatabaseModel, basePath?: string): any {
     name: database.name,
   };
   
+  // NOTE: type field removed in dao-ai 0.1.2
+  // Type is inferred from: instance_name → Lakebase, host → PostgreSQL
+  
+  // Lakebase-specific fields
   if (database.instance_name) db.instance_name = database.instance_name;
+  
+  // PostgreSQL-specific fields
+  if (database.host) {
+    db.host = formatCredentialWithPath(database.host, basePath ? `${basePath}.host` : undefined);
+  }
+  
+  // Common fields
   if (database.description) db.description = database.description;
   if (database.capacity) db.capacity = database.capacity;
   if (database.max_pool_size) db.max_pool_size = database.max_pool_size;
@@ -923,6 +1056,11 @@ function formatDatabaseRef(database: DatabaseModel, basePath?: string): any {
   }
   if (database.password) {
     db.password = formatCredentialWithPath(database.password, basePath ? `${basePath}.password` : undefined);
+  }
+  
+  // On Behalf of User flag (only for Lakebase - determined by instance_name presence)
+  if (database.on_behalf_of_user && database.instance_name) {
+    db.on_behalf_of_user = database.on_behalf_of_user;
   }
   
   return db;
@@ -1199,12 +1337,17 @@ export function generateYAML(config: AppConfig): string {
     if (config.resources!.genie_rooms && Object.keys(config.resources!.genie_rooms).length > 0) {
       yamlConfig.resources.genie_rooms = {};
       Object.entries(config.resources!.genie_rooms).forEach(([key, room]) => {
-        // Check if space_id is a variable reference (starts with *)
-        const spaceIdStr = safeString(room.space_id);
-        let spaceIdValue: string = spaceIdStr;
-        if (safeStartsWith(spaceIdStr, '*')) {
-          // Convert to reference marker for proper YAML alias handling
-          spaceIdValue = createReference(spaceIdStr.substring(1));
+        // Handle space_id which can be a string, variable reference, or VariableValue object
+        let spaceIdValue: unknown = room.space_id;
+        
+        if (typeof room.space_id === 'string') {
+          // String value - check if it's a variable reference (starts with *)
+          if (safeStartsWith(room.space_id, '*')) {
+            spaceIdValue = createReference(room.space_id.substring(1));
+          }
+        } else if (typeof room.space_id === 'object' && room.space_id !== null) {
+          // VariableValue object - pass through as-is (env, secret, primitive)
+          spaceIdValue = room.space_id;
         }
         
         yamlConfig.resources.genie_rooms[key] = {
@@ -1351,11 +1494,12 @@ export function generateYAML(config: AppConfig): string {
 
   // Tools
   if (config.tools && Object.keys(config.tools).length > 0) {
+    const definedConnections = config.resources?.connections || {};
     yamlConfig.tools = {};
     Object.entries(config.tools).forEach(([key, tool]) => {
       yamlConfig.tools[key] = {
         name: tool.name,
-        function: formatToolFunction(tool.function, key),
+        function: formatToolFunction(tool.function, key, definedConnections),
       };
     });
   }
@@ -1400,9 +1544,10 @@ export function generateYAML(config: AppConfig): string {
         }
       }
       
+      // NOTE: type field removed in dao-ai 0.1.2
+      // Storage type is inferred: database provided → postgres, no database → memory
       yamlConfig.memory.checkpointer = {
         name: config.memory.checkpointer.name,
-        type: config.memory.checkpointer.type || 'memory',
         ...(checkpointerDatabase && { database: checkpointerDatabase }),
       };
     }
@@ -1448,9 +1593,10 @@ export function generateYAML(config: AppConfig): string {
         }
       }
       
+      // NOTE: type field removed in dao-ai 0.1.2
+      // Storage type is inferred: database provided → postgres, no database → memory
       yamlConfig.memory.store = {
         name: config.memory.store.name,
-        type: config.memory.store.type || 'memory',
         ...(storeEmbeddingModel && { embedding_model: storeEmbeddingModel }),
         ...(config.memory.store.dims && { dims: config.memory.store.dims }),
         ...(storeDatabase && { database: storeDatabase }),
@@ -1479,12 +1625,53 @@ export function generateYAML(config: AppConfig): string {
     });
   }
 
+  // Middleware
+  if (config.middleware && Object.keys(config.middleware).length > 0) {
+    yamlConfig.middleware = {};
+    Object.entries(config.middleware).forEach(([key, mw]) => {
+      // Process args, keeping arrays and objects as-is
+      let processedArgs: Record<string, any> | undefined;
+      if (mw.args && Object.keys(mw.args).length > 0) {
+        processedArgs = {};
+        Object.entries(mw.args).forEach(([argKey, argValue]) => {
+          // If it's already an object or array, keep it as-is
+          if (typeof argValue === 'object' && argValue !== null) {
+            processedArgs![argKey] = argValue;
+          } else if (typeof argValue === 'string') {
+            // Try to parse as JSON for strings that look like JSON
+            if ((argValue.startsWith('[') && argValue.endsWith(']')) || 
+                (argValue.startsWith('{') && argValue.endsWith('}'))) {
+              try {
+                processedArgs![argKey] = JSON.parse(argValue);
+              } catch {
+                // Not valid JSON, keep as string
+                processedArgs![argKey] = argValue;
+              }
+            } else {
+              // Regular string, keep as-is
+              processedArgs![argKey] = argValue;
+            }
+          } else {
+            // Numbers, booleans, etc - keep as-is
+            processedArgs![argKey] = argValue;
+          }
+        });
+      }
+      
+      yamlConfig.middleware[key] = {
+        name: mw.name,
+        ...(processedArgs && Object.keys(processedArgs).length > 0 && { args: processedArgs }),
+      };
+    });
+  }
+
   // Agents
   if (config.agents && Object.keys(config.agents).length > 0) {
     const definedLLMs = config.resources?.llms || {};
     const definedPrompts = config.prompts || {};
     const definedTools = config.tools || {};
     const definedGuardrails = config.guardrails || {};
+    const definedMiddleware = config.middleware || {};
     yamlConfig.agents = {};
     Object.entries(config.agents).forEach(([key, agent]) => {
       // Format prompt - either inline string or reference to configured prompt
@@ -1597,14 +1784,74 @@ export function generateYAML(config: AppConfig): string {
         }).filter((ref): ref is string => ref !== null);
       }
       
+      // Format middleware as references - middleware should be referenced using *middleware_key (YAML key)
+      let middlewareValue: string[] | undefined;
+      if (agent.middleware && agent.middleware.length > 0) {
+        middlewareValue = agent.middleware.map((mw, idx) => {
+          // First check if this was originally a reference in imported YAML
+          const originalRef = findOriginalReference(`agents.${key}.middleware.${idx}`, mw);
+          if (originalRef && definedMiddleware[originalRef]) {
+            return createReference(originalRef);
+          }
+          
+          // Middleware are stored as MiddlewareModel objects - find the key by matching name
+          const mwObj = typeof mw === 'object' ? mw : null;
+          const mwName = typeof mw === 'string' ? mw : mw.name;
+          
+          // Strategy 1: Check if mwName is already a valid key in definedMiddleware
+          if (definedMiddleware[mwName]) {
+            return createReference(mwName);
+          }
+          
+          // Strategy 2: Find by deep comparison (most accurate)
+          if (mwObj) {
+            const matchedByObject = Object.entries(definedMiddleware).find(
+              ([, m]) => JSON.stringify(m) === JSON.stringify(mwObj)
+            );
+            if (matchedByObject) {
+              return createReference(matchedByObject[0]);
+            }
+          }
+          
+          // Strategy 3: Find the key in definedMiddleware that matches this middleware's name
+          const matchedByName = Object.entries(definedMiddleware).find(
+            ([, m]) => m.name === mwName
+          );
+          if (matchedByName) {
+            return createReference(matchedByName[0]);
+          }
+          
+          // Fallback: The middleware doesn't exist in definedMiddleware - skip this reference
+          console.warn(`Could not find middleware key for middleware with name "${mwName}". Middleware may have been deleted.`);
+          return null;
+        }).filter((ref): ref is string => ref !== null);
+      }
+      
+      // Format response_format
+      let responseFormatValue: any = undefined;
+      if (agent.response_format) {
+        if (typeof agent.response_format === 'string') {
+          // Simple mode: just the schema string
+          responseFormatValue = agent.response_format;
+        } else if (typeof agent.response_format === 'object') {
+          // Advanced mode: ResponseFormatModel with response_schema and use_tool
+          responseFormatValue = {
+            ...(agent.response_format.response_schema && { response_schema: agent.response_format.response_schema }),
+            ...(agent.response_format.use_tool !== null && agent.response_format.use_tool !== undefined && { use_tool: agent.response_format.use_tool }),
+          };
+        }
+      }
+
       yamlConfig.agents[key] = {
         name: agent.name,
         model: formatModelReference(agent.model, definedLLMs, `agents.${key}.model`),
         ...(agent.description && { description: agent.description }),
         ...(toolsValue && toolsValue.length > 0 && { tools: toolsValue }),
         ...(guardrailsValue && guardrailsValue.length > 0 && { guardrails: guardrailsValue }),
+        ...(middlewareValue && middlewareValue.length > 0 && { middleware: middlewareValue }),
         ...(promptValue && { prompt: promptValue }),
         ...(agent.handoff_prompt && { handoff_prompt: agent.handoff_prompt }),
+        ...(responseFormatValue && { response_format: responseFormatValue }),
       };
     });
   }
@@ -1718,7 +1965,23 @@ export function generateYAML(config: AppConfig): string {
     if (config.app.orchestration) {
       const definedLLMs = config.resources?.llms || {};
       const definedTools = config.tools || {};
-      yamlConfig.app.orchestration = formatOrchestration(config.app.orchestration, definedLLMs, definedTools);
+      const definedMiddleware = config.middleware || {};
+      yamlConfig.app.orchestration = formatOrchestration(config.app.orchestration, definedLLMs, definedTools, definedMiddleware);
+    }
+    
+    // Format chat_history
+    if (config.app.chat_history) {
+      const definedLLMs = config.resources?.llms || {};
+      yamlConfig.app.chat_history = {
+        model: formatModelReference(config.app.chat_history.model, definedLLMs, 'app.chat_history.model'),
+        max_tokens: config.app.chat_history.max_tokens,
+        ...(config.app.chat_history.max_tokens_before_summary && { 
+          max_tokens_before_summary: config.app.chat_history.max_tokens_before_summary 
+        }),
+        ...(config.app.chat_history.max_messages_before_summary && { 
+          max_messages_before_summary: config.app.chat_history.max_messages_before_summary 
+        }),
+      };
     }
   }
 

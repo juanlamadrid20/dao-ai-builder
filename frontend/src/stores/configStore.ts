@@ -6,6 +6,7 @@ import {
   LLMModel, 
   SchemaModel, 
   GuardrailModel, 
+  MiddlewareModel,
   PromptModel, 
   VariableModel, 
   MemoryModel, 
@@ -23,8 +24,11 @@ import {
 
 interface ConfigState {
   config: AppConfig;
+  skippedSteps: Set<string>; // UI state: track which optional steps are skipped
   setConfig: (config: AppConfig) => void;
   updateConfig: (updates: Partial<AppConfig>) => void;
+  skipStep: (stepId: string) => void;
+  unskipStep: (stepId: string) => void;
   
   // Variables
   addVariable: (name: string, variable: VariableModel) => void;
@@ -104,6 +108,11 @@ interface ConfigState {
   updateGuardrail: (refName: string, updates: Partial<GuardrailModel>) => void;
   removeGuardrail: (refName: string) => void;
   
+  // Middleware
+  addMiddleware: (refName: string, middleware: MiddlewareModel) => void;
+  updateMiddleware: (refName: string, updates: Partial<MiddlewareModel>) => void;
+  removeMiddleware: (refName: string) => void;
+  
   // Prompts
   addPrompt: (refName: string, prompt: PromptModel) => void;
   updatePrompt: (refName: string, updates: Partial<PromptModel>) => void;
@@ -145,13 +154,26 @@ const defaultConfig: AppConfig = {
 
 export const useConfigStore = create<ConfigState>((set) => ({
   config: defaultConfig,
+  skippedSteps: new Set<string>(),
   
-  setConfig: (config) => set({ config }),
+  setConfig: (config) => set({ config, skippedSteps: new Set<string>() }),
   
   updateConfig: (updates) =>
     set((state) => ({
       config: { ...state.config, ...updates },
     })),
+  
+  skipStep: (stepId) =>
+    set((state) => ({
+      skippedSteps: new Set(state.skippedSteps).add(stepId),
+    })),
+  
+  unskipStep: (stepId) =>
+    set((state) => {
+      const newSkipped = new Set(state.skippedSteps);
+      newSkipped.delete(stepId);
+      return { skippedSteps: newSkipped };
+    }),
   
   addVariable: (name, variable) =>
     set((state) => ({
@@ -802,6 +824,43 @@ export const useConfigStore = create<ConfigState>((set) => ({
         },
       };
     }),
+
+  addMiddleware: (refName, middleware) =>
+    set((state) => ({
+      config: {
+        ...state.config,
+        middleware: {
+          ...state.config.middleware,
+          [refName]: middleware,
+        },
+      },
+    })),
+  
+  updateMiddleware: (name, updates) =>
+    set((state) => {
+      const middleware = { ...state.config.middleware };
+      if (middleware?.[name]) {
+        middleware[name] = { ...middleware[name], ...updates };
+      }
+      return {
+        config: {
+          ...state.config,
+          middleware,
+        },
+      };
+    }),
+  
+  removeMiddleware: (name) =>
+    set((state) => {
+      const middleware = { ...state.config.middleware };
+      delete middleware?.[name];
+      return {
+        config: {
+          ...state.config,
+          middleware,
+        },
+      };
+    }),
   
   addPrompt: (refName, prompt) =>
     set((state) => ({
@@ -921,6 +980,6 @@ export const useConfigStore = create<ConfigState>((set) => ({
       },
     })),
   
-  reset: () => set({ config: defaultConfig }),
+  reset: () => set({ config: defaultConfig, skippedSteps: new Set<string>() }),
 }));
 

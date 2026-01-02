@@ -162,6 +162,12 @@ export default function AgentsSection() {
     label: gr.name,
   }));
 
+  const middleware = config.middleware || {};
+  const middlewareOptions = Object.entries(middleware).map(([key]) => ({
+    value: key,
+    label: key,
+  }));
+
   const promptOptions = Object.entries(prompts).map(([key, prompt]) => ({
     value: key,
     label: `${key} (${prompt.name})`,
@@ -236,6 +242,9 @@ export default function AgentsSection() {
                     {typeof agent.model === 'object' ? agent.model.name : agent.model}
                   </Badge>
                   <Badge variant="default">{agent.tools?.length || 0} tools</Badge>
+                  {agent.response_format && (
+                    <Badge variant="success">Structured Output</Badge>
+                  )}
                   
                   {/* Edit button */}
                   <Button
@@ -294,10 +303,12 @@ export default function AgentsSection() {
         llmOptions={llmOptions}
         toolOptions={toolOptions}
         guardrailOptions={guardrailOptions}
+        middlewareOptions={middlewareOptions}
         promptOptions={promptOptions}
         llms={llms}
         tools={tools}
         guardrails={guardrails}
+        middleware={middleware}
         prompts={prompts}
         onAdd={addAgent}
         onUpdate={updateAgent}
@@ -315,10 +326,12 @@ interface AgentModalProps {
   llmOptions: { value: string; label: string }[];
   toolOptions: { value: string; label: string }[];
   guardrailOptions: { value: string; label: string }[];
+  middlewareOptions: { value: string; label: string }[];
   promptOptions: { value: string; label: string }[];
   llms: Record<string, any>;
   tools: Record<string, any>;
   guardrails: Record<string, any>;
+  middleware: Record<string, any>;
   prompts: Record<string, PromptModel>;
   onAdd: (refName: string, agent: AgentModel) => void;
   onUpdate: (refName: string, updates: Partial<AgentModel>) => void;
@@ -347,10 +360,12 @@ function AgentModal({
   llmOptions,
   toolOptions,
   guardrailOptions,
+  middlewareOptions,
   promptOptions,
   llms,
   tools,
   guardrails,
+  middleware,
   prompts,
   onAdd,
   onUpdate,
@@ -364,6 +379,7 @@ function AgentModal({
   const [showAiInput, setShowAiInput] = useState(false);
   const [templateParams, setTemplateParams] = useState<string[]>(['user_id', 'store_num']);
   const [customParam, setCustomParam] = useState('');
+  const [jsonValidation, setJsonValidation] = useState<{ valid: boolean; message: string } | null>(null);
   const [formData, setFormData] = useState({
     refName: '',  // Reference name used as the key in YAML
     name: '',
@@ -374,11 +390,29 @@ function AgentModal({
     handoffPrompt: '',
     selectedTools: [] as string[],
     selectedGuardrails: [] as string[],
+    selectedMiddleware: [] as string[],
+    // Response format configuration
+    enableResponseFormat: false,
+    schemaType: 'json' as 'json' | 'class',
+    responseSchema: '',
+    useTool: true as boolean | null, // Default to 'tool' strategy
   });
   
   // Store initial form data for comparison (to detect changes)
   const [initialFormData, setInitialFormData] = useState<typeof formData | null>(null);
   const [initialPromptSource, setInitialPromptSource] = useState<PromptSource>('inline');
+
+  const handleValidateJson = () => {
+    try {
+      JSON.parse(formData.responseSchema);
+      setJsonValidation({ valid: true, message: 'Valid JSON schema' });
+    } catch (error) {
+      setJsonValidation({ 
+        valid: false, 
+        message: error instanceof Error ? error.message : 'Invalid JSON'
+      });
+    }
+  };
 
   const handleGeneratePrompt = async (improveExisting = false) => {
     setIsGeneratingPrompt(true);
@@ -476,6 +510,31 @@ function AgentModal({
         Object.entries(guardrails).find(([, gr]) => gr.name === g.name)?.[0] || ''
       ).filter(Boolean) || [];
       
+      const selectedMiddlewareList = editingAgent.middleware?.map((m) =>
+        Object.entries(middleware).find(([, mw]) => mw.name === m.name)?.[0] || ''
+      ).filter(Boolean) || [];
+      
+      // Parse response_format if present
+      let enableResponseFormat = false;
+      let schemaType: 'json' | 'class' = 'json';
+      let responseSchema = '';
+      let useTool: boolean | null = true;
+      
+      if (editingAgent.response_format) {
+        enableResponseFormat = true;
+        if (typeof editingAgent.response_format === 'string') {
+          // Simple mode: string can be class name or JSON schema
+          responseSchema = editingAgent.response_format;
+          // Try to detect if it's JSON (starts with { or [) or class name
+          schemaType = responseSchema.trim().startsWith('{') || responseSchema.trim().startsWith('[') ? 'json' : 'class';
+        } else if (typeof editingAgent.response_format === 'object') {
+          // Advanced mode with ResponseFormatModel
+          responseSchema = editingAgent.response_format.response_schema || '';
+          schemaType = responseSchema.trim().startsWith('{') || responseSchema.trim().startsWith('[') ? 'json' : 'class';
+          useTool = editingAgent.response_format.use_tool ?? true;
+        }
+      }
+      
       const newFormData = {
         refName: editingKey, // Use the existing key as refName
         name: editingAgent.name,
@@ -486,6 +545,11 @@ function AgentModal({
         handoffPrompt: editingAgent.handoff_prompt || '',
         selectedTools: selectedToolsList,
         selectedGuardrails: selectedGuardrailsList,
+        selectedMiddleware: selectedMiddlewareList,
+        enableResponseFormat,
+        schemaType,
+        responseSchema,
+        useTool,
       };
       
       // Create a separate copy for initial state comparison
@@ -499,6 +563,11 @@ function AgentModal({
         handoffPrompt: editingAgent.handoff_prompt || '',
         selectedTools: [...selectedToolsList],
         selectedGuardrails: [...selectedGuardrailsList],
+        selectedMiddleware: [...selectedMiddlewareList],
+        enableResponseFormat,
+        schemaType,
+        responseSchema,
+        useTool,
       };
       
       setPromptSource(detectedPromptSource);
@@ -517,6 +586,11 @@ function AgentModal({
         handoffPrompt: '',
         selectedTools: [] as string[],
         selectedGuardrails: [] as string[],
+        selectedMiddleware: [] as string[],
+        enableResponseFormat: false,
+        schemaType: 'json' as 'json' | 'class',
+        responseSchema: '',
+        useTool: true as boolean | null, // Default to 'tool' strategy
       };
       setPromptSource('inline');
       setFormData(defaultFormData);
@@ -540,6 +614,16 @@ function AgentModal({
       promptValue = formData.prompt || undefined;
     }
 
+    // Build response_format if enabled
+    let responseFormat: any = undefined;
+    if (formData.enableResponseFormat && formData.responseSchema) {
+      // Always build ResponseFormatModel with schema and use_tool strategy
+      responseFormat = {
+        response_schema: formData.responseSchema,
+        use_tool: formData.useTool,
+      };
+    }
+
     const agent: AgentModel = {
       name: formData.name,
       description: formData.description || undefined,
@@ -548,6 +632,8 @@ function AgentModal({
       handoff_prompt: formData.handoffPrompt || undefined,
       tools: formData.selectedTools.map((key) => tools[key]).filter(Boolean),
       guardrails: formData.selectedGuardrails.map((key) => guardrails[key]).filter(Boolean),
+      middleware: formData.selectedMiddleware.map((key) => middleware[key]).filter(Boolean),
+      response_format: responseFormat,
     };
 
     if (editingKey) {
@@ -579,12 +665,21 @@ function AgentModal({
     if (formData.promptRef !== initialFormData.promptRef) return true;
     if (promptSource !== initialPromptSource) return true;
     
+    // Compare response format fields
+    if (formData.enableResponseFormat !== initialFormData.enableResponseFormat) return true;
+    if (formData.schemaType !== initialFormData.schemaType) return true;
+    if (formData.responseSchema !== initialFormData.responseSchema) return true;
+    if (formData.useTool !== initialFormData.useTool) return true;
+    
     // Compare arrays (tools and guardrails)
     if (formData.selectedTools.length !== initialFormData.selectedTools.length) return true;
     if (!formData.selectedTools.every((t, i) => t === initialFormData.selectedTools[i])) return true;
     
     if (formData.selectedGuardrails.length !== initialFormData.selectedGuardrails.length) return true;
     if (!formData.selectedGuardrails.every((g, i) => g === initialFormData.selectedGuardrails[i])) return true;
+    
+    if (formData.selectedMiddleware.length !== initialFormData.selectedMiddleware.length) return true;
+    if (!formData.selectedMiddleware.every((m, i) => m === initialFormData.selectedMiddleware[i])) return true;
     
     return false;
   }, [formData, initialFormData, promptSource, initialPromptSource, editingKey]);
@@ -929,6 +1024,149 @@ function AgentModal({
             placeholder="Select guardrails..."
             hint="Safety checks for this agent"
           />
+        </div>
+
+        <MultiSelect
+          label="Middleware"
+          options={middlewareOptions}
+          value={formData.selectedMiddleware}
+          onChange={(value) => setFormData({ ...formData, selectedMiddleware: value })}
+          placeholder="Select middleware..."
+          hint="Middleware to customize agent execution behavior"
+        />
+
+        {/* Response Format Configuration */}
+        <div className="space-y-3 p-4 bg-slate-800/30 rounded-lg border border-slate-700/50">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-2">
+              <label className="text-sm font-medium text-slate-300">Response Format</label>
+              <Badge variant="info" className="text-xs">Optional</Badge>
+            </div>
+            <label className="flex items-center space-x-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={formData.enableResponseFormat}
+                onChange={(e) => {
+                  setFormData({ ...formData, enableResponseFormat: e.target.checked });
+                  setJsonValidation(null); // Clear validation when toggling
+                }}
+                className="rounded border-slate-600 text-violet-500 focus:ring-violet-500 focus:ring-offset-slate-900"
+              />
+              <span className="text-xs text-slate-400">Enable</span>
+            </label>
+          </div>
+          
+          {formData.enableResponseFormat && (
+            <div className="space-y-3 pt-2">
+              <p className="text-xs text-slate-400">
+                Configure structured response output using JSON schema or a fully qualified class name.
+              </p>
+              
+              {/* Schema Type Toggle - JSON Schema or Class Name */}
+              <div className="flex items-center space-x-2">
+                <label className="text-xs font-medium text-slate-400">Schema Type:</label>
+                <div className="inline-flex rounded-lg bg-slate-900/50 p-0.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFormData({ ...formData, schemaType: 'json' });
+                      setJsonValidation(null);
+                    }}
+                    className={`px-3 py-1 text-xs rounded-md font-medium transition-all duration-150 ${
+                      formData.schemaType === 'json'
+                        ? 'bg-violet-500/20 text-violet-400 border border-violet-500/40'
+                        : 'text-slate-400 border border-transparent hover:text-slate-300'
+                    }`}
+                  >
+                    JSON Schema
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFormData({ ...formData, schemaType: 'class' });
+                      setJsonValidation(null);
+                    }}
+                    className={`px-3 py-1 text-xs rounded-md font-medium transition-all duration-150 ${
+                      formData.schemaType === 'class'
+                        ? 'bg-violet-500/20 text-violet-400 border border-violet-500/40'
+                        : 'text-slate-400 border border-transparent hover:text-slate-300'
+                    }`}
+                  >
+                    Class Name
+                  </button>
+                </div>
+              </div>
+
+              {/* Schema Input - JSON or Class Name */}
+              {formData.schemaType === 'json' ? (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-medium text-slate-400">JSON Schema</label>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      onClick={handleValidateJson}
+                    >
+                      Validate
+                    </Button>
+                  </div>
+                  <Textarea
+                    value={formData.responseSchema}
+                    onChange={(e) => {
+                      setFormData({ ...formData, responseSchema: e.target.value });
+                      setJsonValidation(null); // Clear validation on change
+                    }}
+                    rows={6}
+                    placeholder='{"type": "object", "properties": {...}}'
+                    hint="Enter a JSON schema to define the response structure"
+                  />
+                  {jsonValidation && (
+                    <div className={`p-2 rounded-lg text-xs ${
+                      jsonValidation.valid 
+                        ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-400'
+                        : 'bg-red-500/10 border border-red-500/30 text-red-400'
+                    }`}>
+                      {jsonValidation.message}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <label className="text-xs font-medium text-slate-400">Fully Qualified Class Name</label>
+                  <Input
+                    value={formData.responseSchema}
+                    onChange={(e) => setFormData({ ...formData, responseSchema: e.target.value })}
+                    placeholder="myapp.models.ResponseModel"
+                    hint="e.g., myapp.models.MyResponseModel"
+                  />
+                </div>
+              )}
+
+              {/* Strategy Dropdown - Always visible */}
+              <div className="space-y-2">
+                <label className="text-xs font-medium text-slate-400">Strategy (use_tool)</label>
+                <Select
+                  value={formData.useTool === null ? 'auto' : formData.useTool ? 'tool' : 'provider'}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setFormData({ 
+                      ...formData, 
+                      useTool: val === 'auto' ? null : val === 'tool' ? true : false 
+                    });
+                  }}
+                  options={[
+                    { value: 'auto', label: 'Auto-detect' },
+                    { value: 'tool', label: 'Tool Strategy (function calling)' },
+                    { value: 'provider', label: 'Provider Strategy (native)' },
+                  ]}
+                />
+                <p className="text-xs text-slate-500">
+                  Auto-detect lets LangChain choose the best strategy. Tool uses function calling (recommended). Provider uses native structured output.
+                </p>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Duplicate reference name warning */}

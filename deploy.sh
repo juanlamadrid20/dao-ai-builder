@@ -1,15 +1,90 @@
 #!/bin/bash
 # Deploy DAO AI Builder to Databricks Apps
-#
-# Usage:
-#   ./deploy.sh
-#
-# Prerequisites:
-#   - Databricks CLI configured with authentication
-#   - Node.js and npm installed
-#   - jq installed (for JSON parsing)
 
 set -e
+
+# Help text
+show_help() {
+    cat << EOF
+DAO AI Builder - Deployment Script
+
+USAGE:
+    ./deploy.sh [OPTIONS]
+
+OPTIONS:
+    -h, --help      Show this help message and exit
+    --force         Perform a clean deployment by removing all build artifacts
+                    before deploying. This includes:
+                    - .databricks/ (bundle state)
+                    - static/ (root static files)
+                    - backend/static/ (backend static files)
+                    - frontend/dist/ (frontend build output)
+
+EXAMPLES:
+    # Normal deployment (incremental, uses existing builds)
+    ./deploy.sh
+
+    # Clean deployment (removes all artifacts first)
+    ./deploy.sh --force
+
+    # Show this help
+    ./deploy.sh --help
+
+DESCRIPTION:
+    This script deploys the DAO AI Builder application to Databricks Apps.
+    It performs the following steps:
+
+    1. Checks prerequisites (Databricks CLI, npm, jq)
+    2. Generates JSON schema for validation
+    3. Builds the frontend application
+    4. Prepares static files
+    5. Syncs files to Databricks workspace using bundle
+    6. Deploys the app code
+    7. Starts the app and waits for it to be ready
+
+    Use --force when you want to ensure a completely fresh deployment or
+    when troubleshooting issues related to cached artifacts.
+
+PREREQUISITES:
+    - Databricks CLI configured with authentication
+      Install: pip install databricks-cli
+      Configure: databricks configure
+
+    - Node.js and npm installed
+      Install from: https://nodejs.org
+
+    - jq (optional, for better status polling)
+      Install: brew install jq
+
+ENVIRONMENT:
+    The script uses the current Databricks CLI profile. Ensure you're
+    authenticated to the correct workspace before running.
+
+MORE INFO:
+    - Databricks Apps: https://docs.databricks.com/dev-tools/databricks-apps/
+    - DAO AI: https://github.com/natefleming/dao-ai
+
+EOF
+}
+
+# Parse arguments
+FORCE_CLEAN=false
+for arg in "$@"; do
+    case $arg in
+        -h|--help)
+            show_help
+            exit 0
+            ;;
+        --force)
+            FORCE_CLEAN=true
+            ;;
+        *)
+            echo "Error: Unknown option '$arg'"
+            echo "Run './deploy.sh --help' for usage information"
+            exit 1
+            ;;
+    esac
+done
 
 # Colors for output
 RED='\033[0;31m'
@@ -25,6 +100,17 @@ echo -e "${GREEN}╔════════════════════
 echo -e "${GREEN}║     DAO AI Builder - Deployment Script     ║${NC}"
 echo -e "${GREEN}╚════════════════════════════════════════════╝${NC}"
 echo ""
+
+# Clean up if --force flag is used
+if [ "$FORCE_CLEAN" = true ]; then
+    echo -e "${YELLOW}🧹 Force clean enabled - removing all build artifacts...${NC}"
+    rm -rf .databricks
+    rm -rf static
+    rm -rf backend/static
+    rm -rf frontend/dist
+    echo -e "  ${GREEN}✓${NC} Cleaned bundle state, static files, and frontend build"
+    echo ""
+fi
 
 # Check prerequisites
 echo -e "${YELLOW}Checking prerequisites...${NC}"
@@ -200,6 +286,7 @@ echo -e "  ${BLUE}databricks apps get ${APP_NAME}${NC}              - View app s
 echo -e "  ${BLUE}databricks apps list-deployments ${APP_NAME}${NC} - View deployment history"
 echo -e "  ${BLUE}databricks apps stop ${APP_NAME}${NC}             - Stop the app"
 echo -e "  ${BLUE}./deploy.sh${NC}                                  - Redeploy"
+echo -e "  ${BLUE}./deploy.sh --force${NC}                          - Clean redeploy (removes all artifacts)"
 echo ""
 
 # Open the app in browser (macOS)

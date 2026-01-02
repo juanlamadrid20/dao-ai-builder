@@ -53,7 +53,14 @@ export interface LLMModel {
   temperature?: number;
   max_tokens?: number;
   on_behalf_of_user?: boolean;
+  use_response_api?: boolean;
   fallbacks?: (string | LLMModel)[];
+  // Authentication fields
+  service_principal?: ServicePrincipalModel | string;
+  client_id?: VariableValue;
+  client_secret?: VariableValue;
+  workspace_host?: VariableValue;
+  pat?: VariableValue;
 }
 
 export interface VectorStoreModel {
@@ -68,6 +75,12 @@ export interface VectorStoreModel {
   columns?: string[];
   doc_uri?: string;
   embedding_source_column: string;
+  // Authentication fields
+  service_principal?: ServicePrincipalModel | string;
+  client_id?: VariableValue;
+  client_secret?: VariableValue;
+  workspace_host?: VariableValue;
+  pat?: VariableValue;
 }
 
 export interface IndexModel {
@@ -85,6 +98,12 @@ export interface TableModel {
   on_behalf_of_user?: boolean;
   schema?: SchemaModel;
   name?: string;
+  // Authentication fields
+  service_principal?: ServicePrincipalModel | string;
+  client_id?: VariableValue;
+  client_secret?: VariableValue;
+  workspace_host?: VariableValue;
+  pat?: VariableValue;
 }
 
 export interface VolumePathModel {
@@ -102,7 +121,14 @@ export interface GenieRoomModel {
   on_behalf_of_user?: boolean;
   name: string;
   description?: string;
-  space_id: string;
+  space_id: VariableValue;  // Can be string or variable reference (env, secret, etc.)
+  warehouse?: WarehouseModel | string;  // Optional warehouse reference
+  // Authentication fields
+  service_principal?: ServicePrincipalModel | string;
+  client_id?: VariableValue;
+  client_secret?: VariableValue;
+  workspace_host?: VariableValue;
+  pat?: VariableValue;
 }
 
 export interface FunctionModel {
@@ -116,6 +142,12 @@ export interface WarehouseModel {
   name: string;
   description?: string;
   warehouse_id: string;
+  // Authentication fields
+  service_principal?: ServicePrincipalModel | string;
+  client_id?: VariableValue;
+  client_secret?: VariableValue;
+  workspace_host?: VariableValue;
+  pat?: VariableValue;
 }
 
 // Genie Caching Models
@@ -127,38 +159,58 @@ export interface GenieLRUCacheParametersModel {
 
 export interface GenieSemanticCacheParametersModel {
   time_to_live_seconds?: number | null;  // Default: 86400 (1 day), null = never expires
-  similarity_threshold?: number;  // Default: 0.85
+  similarity_threshold?: number;  // Default: 0.85 - Minimum similarity for question matching
+  context_similarity_threshold?: number;  // Default: 0.80 - Minimum similarity for context matching
+  question_weight?: number | null;  // Default: 0.6 - Weight for question similarity (0-1)
+  context_weight?: number | null;  // Default: computed as 1 - question_weight
   embedding_model?: string | LLMModel;  // Default: "databricks-gte-large-en"
   embedding_dims?: number | null;  // Auto-detected if null
   database: DatabaseModel | string;  // Can be inline or reference
   warehouse: WarehouseModel | string;  // Can be inline or reference
   table_name?: string;  // Default: "genie_semantic_cache"
+  context_window_size?: number;  // Default: 3 - Number of previous turns to include for context
+  max_context_tokens?: number;  // Default: 2000 - Maximum context length to prevent extremely long embeddings
 }
+
+// Database type is inferred from fields:
+// - instance_name provided → Lakebase
+// - host provided → PostgreSQL
+// NOTE: type field removed in dao-ai 0.1.2, type is inferred from instance_name vs host
+export type DatabaseType = "postgres" | "lakebase";
 
 export interface DatabaseModel {
   on_behalf_of_user?: boolean;
   name: string;
-  instance_name?: string;
+  // NOTE: type field is for UI only, not included in YAML output (inferred from instance_name vs host)
+  _uiType?: DatabaseType;
+  instance_name?: string;  // Lakebase instance name
   description?: string;
-  host?: string;
-  database?: string;
-  port?: number;
+  host?: VariableValue;  // PostgreSQL hostname (can be variable or string)
+  database?: VariableValue;  // Database name (default: "databricks_postgres")
+  port?: VariableValue;  // Port number (default: 5432)
   connection_kwargs?: Record<string, any>;
   max_pool_size?: number;
   timeout_seconds?: number;
   capacity?: "CU_1" | "CU_2";
   node_count?: number;
-  user?: string;
-  password?: string;
+  user?: VariableValue;
+  password?: VariableValue;
   service_principal?: ServicePrincipalModel | string;  // Can be inline or reference
-  client_id?: string;
-  client_secret?: string;
-  workspace_host?: string;
+  client_id?: VariableValue;
+  client_secret?: VariableValue;
+  workspace_host?: VariableValue;
+  pat?: VariableValue;
 }
 
 export interface ConnectionModel {
   on_behalf_of_user?: boolean;
   name: string;
+  // Authentication fields
+  service_principal?: ServicePrincipalModel | string;
+  client_id?: VariableValue;
+  client_secret?: VariableValue;
+  workspace_host?: VariableValue;
+  pat?: VariableValue;
 }
 
 export interface RetrieverModel {
@@ -198,11 +250,9 @@ export interface FactoryFunctionModel {
 
 export interface UnityCatalogFunctionModel {
   type: "unity_catalog";
-  name?: string; // Optional when using __MERGE__
-  schema?: SchemaModel;
+  resource?: FunctionModel | string; // Reference to FunctionModel in resources.functions
   partial_args?: Record<string, any>;
   human_in_the_loop?: HumanInTheLoopModel;
-  __MERGE__?: string; // For YAML merge syntax (<<: *func_ref)
 }
 
 export interface McpFunctionModel {
@@ -238,11 +288,11 @@ export interface ToolModel {
   function: ToolFunctionModel;
 }
 
+export type HumanInTheLoopDecision = "approve" | "edit" | "reject";
+
 export interface HumanInTheLoopModel {
   review_prompt?: string;
-  interrupt_config?: Record<string, any>;
-  decline_message?: string;
-  custom_actions?: Record<string, string>;
+  allowed_decisions?: HumanInTheLoopDecision[];
 }
 
 export interface GuardrailModel {
@@ -250,6 +300,16 @@ export interface GuardrailModel {
   model: LLMModel;
   prompt: string;
   num_retries?: number;
+}
+
+export interface MiddlewareModel {
+  name: string;
+  args?: Record<string, any>;
+}
+
+export interface ResponseFormatModel {
+  use_tool?: boolean | null;
+  response_schema?: string;
 }
 
 export interface AgentModel {
@@ -263,6 +323,8 @@ export interface AgentModel {
   create_agent_hook?: string | PythonFunctionModel | FactoryFunctionModel;
   pre_agent_hook?: string | PythonFunctionModel | FactoryFunctionModel;
   post_agent_hook?: string | PythonFunctionModel | FactoryFunctionModel;
+  middleware?: MiddlewareModel[];
+  response_format?: ResponseFormatModel | string;
 }
 
 export interface PromptModel {
@@ -289,12 +351,14 @@ export interface SupervisorModel {
   model: LLMModel;
   tools?: ToolModel[];
   prompt?: string;
+  middleware?: MiddlewareModel[];
 }
 
 export interface SwarmModel {
   model: LLMModel;
   default_agent?: AgentModel | string;
   handoffs?: Record<string, (AgentModel | string)[] | null>;
+  middleware?: MiddlewareModel[];
 }
 
 export interface MemoryModel {
@@ -305,14 +369,16 @@ export interface MemoryModel {
 
 export interface CheckpointerModel {
   name: string;
-  type?: "postgres" | "memory";
+  // NOTE: type field removed in dao-ai 0.1.2
+  // Storage type is inferred: database provided → postgres, no database → memory
   database?: DatabaseModel;
 }
 
 export interface StoreModel {
   name: string;
   embedding_model?: LLMModel;
-  type?: "postgres" | "memory";
+  // NOTE: type field removed in dao-ai 0.1.2
+  // Storage type is inferred: database provided → postgres, no database → memory
   dims?: number;
   database?: DatabaseModel;
   namespace?: string;
@@ -347,7 +413,6 @@ export interface AppModel {
   alias?: string;
   initialization_hooks?: (string | PythonFunctionModel | FactoryFunctionModel)[];
   shutdown_hooks?: (string | PythonFunctionModel | FactoryFunctionModel)[];
-  message_hooks?: (string | PythonFunctionModel | FactoryFunctionModel)[];
   input_example?: ChatPayload;
   chat_history?: ChatHistoryModel;
   code_paths?: string[];
@@ -370,7 +435,6 @@ export interface ChatHistoryModel {
   max_tokens?: number;
   max_tokens_before_summary?: number;
   max_messages_before_summary?: number;
-  max_summary_tokens?: number;
 }
 
 export interface EvaluationModel {
@@ -430,6 +494,7 @@ export interface AppConfig {
   retrievers?: Record<string, RetrieverModel>;
   tools?: Record<string, ToolModel>;
   guardrails?: Record<string, GuardrailModel>;
+  middleware?: Record<string, MiddlewareModel>;
   memory?: MemoryModel;
   prompts?: Record<string, PromptModel>;
   agents?: Record<string, AgentModel>;

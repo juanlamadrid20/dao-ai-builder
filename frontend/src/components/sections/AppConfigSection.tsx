@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Settings, Save, GitBranch, Users, ArrowRightLeft, Plus, Trash2, Info, Bot, X, Tag, Wrench, Sparkles, Loader2, Variable } from 'lucide-react';
+import { Settings, Save, GitBranch, Users, ArrowRightLeft, Plus, Trash2, Info, Bot, X, Tag, Wrench, Sparkles, Loader2, Variable, Layers } from 'lucide-react';
 import { useConfigStore } from '@/stores/configStore';
 import { useCatalogs, useSchemas } from '@/hooks/useDatabricks';
 import Button from '../ui/Button';
@@ -8,6 +8,7 @@ import Select from '../ui/Select';
 import Textarea from '../ui/Textarea';
 import Card from '../ui/Card';
 import Badge from '../ui/Badge';
+import MultiSelect from '../ui/MultiSelect';
 import { LogLevel } from '@/types/dao-ai-types';
 import { clsx } from 'clsx';
 
@@ -281,6 +282,36 @@ export default function AppConfigSection() {
       return matchedKey || '';
     }).filter(Boolean);
   });
+
+  // Supervisor middleware state - stores middleware keys
+  const [supervisorMiddleware, setSupervisorMiddleware] = useState<string[]>(() => {
+    const existingMiddleware = config.app?.orchestration?.supervisor?.middleware;
+    if (!existingMiddleware || !Array.isArray(existingMiddleware)) return [];
+    
+    const middleware = config.middleware || {};
+    // Find the middleware keys that match the middleware names
+    return existingMiddleware.map(m => {
+      const middlewareName = typeof m === 'string' ? m : (m as any)?.name;
+      if (!middlewareName) return '';
+      const matchedKey = Object.entries(middleware).find(([, mw]) => (mw as any)?.name === middlewareName)?.[0];
+      return matchedKey || '';
+    }).filter(Boolean);
+  });
+
+  // Swarm middleware state - stores middleware keys
+  const [swarmMiddleware, setSwarmMiddleware] = useState<string[]>(() => {
+    const existingMiddleware = config.app?.orchestration?.swarm?.middleware;
+    if (!existingMiddleware || !Array.isArray(existingMiddleware)) return [];
+    
+    const middleware = config.middleware || {};
+    // Find the middleware keys that match the middleware names
+    return existingMiddleware.map(m => {
+      const middlewareName = typeof m === 'string' ? m : (m as any)?.name;
+      if (!middlewareName) return '';
+      const matchedKey = Object.entries(middleware).find(([, mw]) => (mw as any)?.name === middlewareName)?.[0];
+      return matchedKey || '';
+    }).filter(Boolean);
+  });
   
   // Memory reference for orchestration
   const [orchestrationMemoryRef, setOrchestrationMemoryRef] = useState<string>(() => {
@@ -299,6 +330,26 @@ export default function AppConfigSection() {
     }
     return '';
   });
+
+  // Chat History state
+  const [enableChatHistory, setEnableChatHistory] = useState(!!app?.chat_history);
+  const [chatHistoryLLM, setChatHistoryLLM] = useState(() => {
+    const existingModel = app?.chat_history?.model?.name;
+    if (existingModel) {
+      const found = Object.entries(llms).find(([, llm]) => llm.name === existingModel);
+      return found ? found[0] : '';
+    }
+    return '';
+  });
+  const [chatHistoryMaxTokens, setChatHistoryMaxTokens] = useState(app?.chat_history?.max_tokens || 2048);
+  const [chatHistoryUsesTokens, setChatHistoryUsesTokens] = useState(() => {
+    // Determine initial toggle state based on existing config
+    if (app?.chat_history?.max_tokens_before_summary) return true;
+    if (app?.chat_history?.max_messages_before_summary) return false;
+    return true; // Default to tokens
+  });
+  const [chatHistoryMaxTokensBeforeSummary, setChatHistoryMaxTokensBeforeSummary] = useState(app?.chat_history?.max_tokens_before_summary || 20480);
+  const [chatHistoryMaxMessagesBeforeSummary, setChatHistoryMaxMessagesBeforeSummary] = useState(app?.chat_history?.max_messages_before_summary || 10);
 
   // Determine if there are unsaved changes
   const hasChanges = (() => {
@@ -351,6 +402,17 @@ export default function AppConfigSection() {
       }).filter(Boolean).sort();
       const currentSupervisorTools = [...supervisorTools].sort();
       if (JSON.stringify(savedSupervisorTools) !== JSON.stringify(currentSupervisorTools)) return true;
+      
+      // Check supervisor middleware
+      const configMiddleware = config.middleware || {};
+      const savedSupervisorMiddleware = (app?.orchestration?.supervisor?.middleware || []).map(m => {
+        const middlewareName = typeof m === 'string' ? m : (m as any)?.name;
+        if (!middlewareName) return '';
+        const matchedKey = Object.entries(configMiddleware).find(([, mw]) => (mw as any)?.name === middlewareName)?.[0];
+        return matchedKey || '';
+      }).filter(Boolean).sort();
+      const currentSupervisorMiddleware = [...supervisorMiddleware].sort();
+      if (JSON.stringify(savedSupervisorMiddleware) !== JSON.stringify(currentSupervisorMiddleware)) return true;
     } else if (pattern === 'swarm') {
       const savedLLMName = app?.orchestration?.swarm?.model?.name;
       const currentLLMName = selectedLLM ? llms[selectedLLM]?.name : '';
@@ -369,6 +431,17 @@ export default function AppConfigSection() {
         else currentHandoffsDict[h.agentName] = h.targets;
       });
       if (JSON.stringify(savedHandoffs) !== JSON.stringify(currentHandoffsDict)) return true;
+      
+      // Check swarm middleware
+      const swarmConfigMiddleware = config.middleware || {};
+      const savedSwarmMiddleware = (app?.orchestration?.swarm?.middleware || []).map(m => {
+        const middlewareName = typeof m === 'string' ? m : (m as any)?.name;
+        if (!middlewareName) return '';
+        const matchedKey = Object.entries(swarmConfigMiddleware).find(([, mw]) => (mw as any)?.name === middlewareName)?.[0];
+        return matchedKey || '';
+      }).filter(Boolean).sort();
+      const currentSwarmMiddleware = [...swarmMiddleware].sort();
+      if (JSON.stringify(savedSwarmMiddleware) !== JSON.stringify(currentSwarmMiddleware)) return true;
     }
     
     // Check orchestration memory reference
@@ -424,6 +497,12 @@ export default function AppConfigSection() {
       label: agents[key].name,
     })),
   ];
+
+  const middleware = config.middleware || {};
+  const middlewareOptions = Object.entries(middleware).map(([key]) => ({
+    value: key,
+    label: key,
+  }));
 
   const handoffTypeOptions = [
     { value: 'any', label: 'Any Agent (can hand off to all)' },
@@ -485,21 +564,30 @@ export default function AppConfigSection() {
     setSchemaSource(detectedSchemaSource);
     
     // Sync selected agents - default to all if none are explicitly configured
+    let agentKeys: string[] = [];
     if (app?.agents && Array.isArray(app.agents) && app.agents.length > 0) {
-      const agentKeys = app.agents.map(a => {
+      agentKeys = app.agents.map(a => {
         const matchedKey = Object.entries(agents).find(([, agent]) => agent.name === a.name)?.[0];
         return matchedKey || '';
       }).filter(Boolean);
       setSelectedAgents(agentKeys);
     } else {
       // Default to all agents when no explicit selection exists
-      setSelectedAgents(Object.keys(agents));
+      agentKeys = Object.keys(agents);
+      setSelectedAgents(agentKeys);
     }
     
     // Sync orchestration pattern and settings
-    const newPattern: OrchestrationPattern = 
+    // Note: Supervisor and Swarm require multiple agents, so force to 'none' if only one agent
+    let newPattern: OrchestrationPattern = 
       app?.orchestration?.supervisor ? 'supervisor' :
       app?.orchestration?.swarm ? 'swarm' : 'none';
+    
+    // Override to 'none' if insufficient agents for the pattern
+    if ((newPattern === 'supervisor' || newPattern === 'swarm') && agentKeys.length <= 1) {
+      newPattern = 'none';
+    }
+    
     setPattern(newPattern);
     
     // Sync orchestration model
@@ -526,6 +614,20 @@ export default function AppConfigSection() {
       setSupervisorTools(toolKeys);
     } else {
       setSupervisorTools([]);
+    }
+    
+    // Sync supervisor middleware
+    const existingSupervisorMiddleware = app?.orchestration?.supervisor?.middleware;
+    if (existingSupervisorMiddleware && Array.isArray(existingSupervisorMiddleware)) {
+      const middlewareKeys = existingSupervisorMiddleware.map(m => {
+        const middlewareName = typeof m === 'string' ? m : (m as any)?.name;
+        if (!middlewareName) return '';
+        const matchedKey = Object.entries(middleware).find(([, mw]) => (mw as any)?.name === middlewareName)?.[0];
+        return matchedKey || '';
+      }).filter(Boolean);
+      setSupervisorMiddleware(middlewareKeys);
+    } else {
+      setSupervisorMiddleware([]);
     }
     
     // Sync swarm default agent
@@ -556,6 +658,20 @@ export default function AppConfigSection() {
       setHandoffs(newHandoffs);
     } else {
       setHandoffs([]);
+    }
+    
+    // Sync swarm middleware
+    const existingSwarmMiddleware = app?.orchestration?.swarm?.middleware;
+    if (existingSwarmMiddleware && Array.isArray(existingSwarmMiddleware)) {
+      const middlewareKeys = existingSwarmMiddleware.map(m => {
+        const middlewareName = typeof m === 'string' ? m : (m as any)?.name;
+        if (!middlewareName) return '';
+        const matchedKey = Object.entries(middleware).find(([, mw]) => (mw as any)?.name === middlewareName)?.[0];
+        return matchedKey || '';
+      }).filter(Boolean);
+      setSwarmMiddleware(middlewareKeys);
+    } else {
+      setSwarmMiddleware([]);
     }
     
     // Sync orchestration memory reference
@@ -603,20 +719,48 @@ export default function AppConfigSection() {
         };
       })
     );
+    
+    // Sync chat history configuration
+    setEnableChatHistory(!!app?.chat_history);
+    
+    const chatHistoryModel = app?.chat_history?.model?.name;
+    if (chatHistoryModel) {
+      const foundLLM = Object.entries(llms).find(([, llm]) => llm.name === chatHistoryModel);
+      setChatHistoryLLM(foundLLM ? foundLLM[0] : '');
+    } else {
+      setChatHistoryLLM('');
+    }
+    
+    setChatHistoryMaxTokens(app?.chat_history?.max_tokens || 2048);
+    
+    // Determine if using tokens or messages threshold
+    if (app?.chat_history?.max_tokens_before_summary) {
+      setChatHistoryUsesTokens(true);
+      setChatHistoryMaxTokensBeforeSummary(app.chat_history.max_tokens_before_summary);
+    } else if (app?.chat_history?.max_messages_before_summary) {
+      setChatHistoryUsesTokens(false);
+      setChatHistoryMaxMessagesBeforeSummary(app.chat_history.max_messages_before_summary);
+    } else {
+      // No chat history configured, reset to defaults
+      setChatHistoryUsesTokens(true);
+      setChatHistoryMaxTokensBeforeSummary(20480);
+      setChatHistoryMaxMessagesBeforeSummary(10);
+    }
   }, [app, agents, llms, tools]);
 
   // Auto-adjust orchestration pattern based on number of selected agents
-  // Single agent always uses "No Orchestration" in the UI, but YAML may output swarm if memory is configured
+  // Single agent = always "No Orchestration" (supervisor/swarm disabled)
+  // Multiple agents = enable supervisor/swarm options
   useEffect(() => {
     if (selectedAgents.length <= 1) {
-      // Single agent or no agents - UI shows "No Orchestration"
+      // Single agent or no agents - force to "No Orchestration"
+      // Supervisor and Swarm don't make sense with only one agent
       if (pattern !== 'none') {
         setPattern('none');
       }
-    } else if (selectedAgents.length > 1 && pattern === 'none') {
-      // Multiple agents - default to Supervisor orchestration
-      setPattern('supervisor');
     }
+    // Note: When agents increase to >1, we don't auto-select a pattern
+    // User must explicitly choose Supervisor or Swarm
   }, [selectedAgents.length, pattern]);
 
   const addHandoff = () => {
@@ -693,11 +837,17 @@ export default function AppConfigSection() {
         .map(key => tools[key])
         .filter(Boolean);
       
+      // Build supervisor middleware array from selected middleware keys
+      const supervisorMiddlewareArray = supervisorMiddleware
+        .map(key => middleware[key])
+        .filter(Boolean);
+      
       orchestration = {
         supervisor: {
           model: llms[selectedLLM],
           ...(supervisorToolsArray.length > 0 && { tools: supervisorToolsArray }),
           ...(supervisorPrompt && { prompt: supervisorPrompt }),
+          ...(supervisorMiddlewareArray.length > 0 && { middleware: supervisorMiddlewareArray }),
         },
         // Add memory reference if configured
         ...(orchestrationMemoryRef && { memory: `*${orchestrationMemoryRef}` }),
@@ -714,11 +864,17 @@ export default function AppConfigSection() {
         }
       });
 
+      // Build swarm middleware array from selected middleware keys
+      const swarmMiddlewareArray = swarmMiddleware
+        .map(key => middleware[key])
+        .filter(Boolean);
+
       orchestration = {
         swarm: {
           model: llms[selectedLLM],
           ...(defaultAgent && agents[defaultAgent] && { default_agent: defaultAgent }),
           ...(Object.keys(handoffsDict).length > 0 && { handoffs: handoffsDict }),
+          ...(swarmMiddlewareArray.length > 0 && { middleware: swarmMiddlewareArray }),
         },
         // Add memory reference if configured
         ...(orchestrationMemoryRef && { memory: `*${orchestrationMemoryRef}` }),
@@ -779,6 +935,22 @@ export default function AppConfigSection() {
       }
     });
 
+    // Build chat_history config
+    let chatHistory: any = undefined;
+    if (enableChatHistory && chatHistoryLLM && llms[chatHistoryLLM]) {
+      chatHistory = {
+        model: llms[chatHistoryLLM],
+        max_tokens: chatHistoryMaxTokens,
+      };
+      
+      // Add threshold based on toggle selection (mutually exclusive)
+      if (chatHistoryUsesTokens) {
+        chatHistory.max_tokens_before_summary = chatHistoryMaxTokensBeforeSummary;
+      } else {
+        chatHistory.max_messages_before_summary = chatHistoryMaxMessagesBeforeSummary;
+      }
+    }
+
     updateApp({
       name: formData.name,
       description: formData.description || undefined,
@@ -796,6 +968,7 @@ export default function AppConfigSection() {
       tags: Object.keys(tags).length > 0 ? tags : undefined,
       permissions: permissions.length > 0 ? permissions : undefined,
       environment_vars: Object.keys(environmentVars).length > 0 ? environmentVars : undefined,
+      chat_history: chatHistory,
     });
   };
 
@@ -1293,6 +1466,36 @@ export default function AppConfigSection() {
                     </div>
                   )}
                 </div>
+
+                {/* Supervisor Middleware Configuration */}
+                <div className="space-y-3 pt-3 border-t border-slate-700/50">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h4 className="text-sm font-medium text-slate-200 flex items-center gap-2">
+                        <Layers className="w-4 h-4 text-purple-400" />
+                        Supervisor Middleware
+                      </h4>
+                      <p className="text-xs text-slate-500">
+                        Assign middleware to customize supervisor execution behavior
+                      </p>
+                    </div>
+                  </div>
+
+                  {Object.keys(middleware).length === 0 ? (
+                    <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 text-amber-400 text-sm">
+                      No middleware configured. Add middleware in the Middleware section first.
+                    </div>
+                  ) : (
+                    <MultiSelect
+                      label="Select Middleware"
+                      options={middlewareOptions}
+                      value={supervisorMiddleware}
+                      onChange={(value) => setSupervisorMiddleware(value)}
+                      placeholder="Select middleware..."
+                      hint="Middleware to apply to the supervisor agent"
+                    />
+                  )}
+                </div>
               </>
             )}
 
@@ -1430,6 +1633,36 @@ export default function AppConfigSection() {
                       )}
                     </div>
                   ))}
+                </div>
+
+                {/* Swarm Middleware Configuration */}
+                <div className="space-y-3 pt-3 border-t border-slate-700/50">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h4 className="text-sm font-medium text-slate-200 flex items-center gap-2">
+                        <Layers className="w-4 h-4 text-purple-400" />
+                        Swarm Middleware
+                      </h4>
+                      <p className="text-xs text-slate-500">
+                        Assign middleware to apply across all agents in the swarm
+                      </p>
+                    </div>
+                  </div>
+
+                  {Object.keys(middleware).length === 0 ? (
+                    <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 text-amber-400 text-sm">
+                      No middleware configured. Add middleware in the Middleware section first.
+                    </div>
+                  ) : (
+                    <MultiSelect
+                      label="Select Middleware"
+                      options={middlewareOptions}
+                      value={swarmMiddleware}
+                      onChange={(value) => setSwarmMiddleware(value)}
+                      placeholder="Select middleware..."
+                      hint="Middleware to apply to the swarm orchestration"
+                    />
+                  )}
                 </div>
               </>
             )}
@@ -1596,6 +1829,122 @@ export default function AppConfigSection() {
             </div>
           </div>
         </div>
+      </Card>
+
+      {/* Chat History Configuration */}
+      <Card className="space-y-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center space-x-2">
+            <Bot className="w-5 h-5 text-slate-400" />
+            <h3 className="font-medium text-white">Chat History Summarization</h3>
+          </div>
+          <label className="flex items-center space-x-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={enableChatHistory}
+              onChange={(e) => setEnableChatHistory(e.target.checked)}
+              className="rounded border-slate-600 text-violet-500 focus:ring-violet-500 focus:ring-offset-slate-900"
+            />
+            <span className="text-xs text-slate-400">Enable</span>
+          </label>
+        </div>
+        <p className="text-sm text-slate-400">
+          Configure automatic chat history summarization to manage long conversations and reduce token usage
+        </p>
+
+        {enableChatHistory && (
+          <div className="space-y-4 p-4 bg-slate-800/30 rounded-lg border border-slate-700/50">
+            <div className="grid grid-cols-2 gap-4">
+              <Select
+                label="Summary Model"
+                value={chatHistoryLLM}
+                onChange={(e) => setChatHistoryLLM(e.target.value)}
+                options={[
+                  { value: '', label: 'Select an LLM...' },
+                  ...Object.entries(llms).map(([key, llm]) => ({
+                    value: key,
+                    label: llm.name || key,
+                  })),
+                ]}
+                hint="LLM for chat history summarization"
+                required
+              />
+
+              <Input
+                label="Max Summary Tokens"
+                type="number"
+                value={chatHistoryMaxTokens}
+                onChange={(e) => setChatHistoryMaxTokens(parseInt(e.target.value) || 2048)}
+                hint="Max tokens for the summary"
+                min={1}
+              />
+            </div>
+
+            {Object.keys(llms).length === 0 && (
+              <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 text-amber-400 text-sm">
+                No LLMs configured. Add an LLM in Resources section first.
+              </div>
+            )}
+
+            <div className="space-y-3">
+              <label className="block text-sm font-medium text-slate-300">Trigger Threshold</label>
+              <div className="flex items-center space-x-6 mb-3">
+                <label className="flex items-center space-x-2 cursor-pointer">
+                  <input
+                    type="radio"
+                    checked={chatHistoryUsesTokens}
+                    onChange={() => setChatHistoryUsesTokens(true)}
+                    className="text-purple-500 focus:ring-purple-500 focus:ring-offset-slate-900"
+                  />
+                  <span className="text-sm text-slate-300">By Tokens</span>
+                </label>
+                <label className="flex items-center space-x-2 cursor-pointer">
+                  <input
+                    type="radio"
+                    checked={!chatHistoryUsesTokens}
+                    onChange={() => setChatHistoryUsesTokens(false)}
+                    className="text-purple-500 focus:ring-purple-500 focus:ring-offset-slate-900"
+                  />
+                  <span className="text-sm text-slate-300">By Messages</span>
+                </label>
+              </div>
+              
+              {chatHistoryUsesTokens ? (
+                <Input
+                  label="Max Tokens Before Summary"
+                  type="number"
+                  value={chatHistoryMaxTokensBeforeSummary}
+                  onChange={(e) => setChatHistoryMaxTokensBeforeSummary(parseInt(e.target.value) || 20480)}
+                  hint="Trigger when history exceeds this token count"
+                  min={1}
+                />
+              ) : (
+                <Input
+                  label="Max Messages Before Summary"
+                  type="number"
+                  value={chatHistoryMaxMessagesBeforeSummary}
+                  onChange={(e) => setChatHistoryMaxMessagesBeforeSummary(parseInt(e.target.value) || 10)}
+                  hint="Trigger when history exceeds this message count"
+                  min={1}
+                />
+              )}
+            </div>
+
+            <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-3 text-sm text-blue-300">
+              <div className="flex items-start space-x-2">
+                <Info className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                <div className="space-y-1">
+                  <p className="font-medium">How it works:</p>
+                  <ul className="list-disc list-inside space-y-1 text-xs text-blue-200/80">
+                    <li>When the threshold is exceeded, older messages are summarized using the selected LLM</li>
+                    <li>Recent messages (up to <strong>{chatHistoryMaxTokens}</strong> tokens) are preserved for context</li>
+                    <li>The summary replaces older messages, reducing overall token usage</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </Card>
 
       {/* Environment Variables */}
