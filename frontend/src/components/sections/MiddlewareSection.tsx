@@ -4,6 +4,7 @@ import { useConfigStore } from '@/stores/configStore';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
 import Select from '../ui/Select';
+import MultiSelect from '../ui/MultiSelect';
 import Textarea from '../ui/Textarea';
 import Card from '../ui/Card';
 import Modal from '../ui/Modal';
@@ -105,6 +106,42 @@ const PRECONFIGURED_MIDDLEWARE = [
     category: 'Assertions',
   },
   {
+    value: 'dao_ai.middleware.create_tool_call_limit_middleware',
+    label: 'Tool Call Limit',
+    description: 'Limit tool calls per thread or run',
+    category: 'Limits',
+  },
+  {
+    value: 'dao_ai.middleware.create_model_call_limit_middleware',
+    label: 'Model Call Limit',
+    description: 'Limit LLM API calls per thread or run',
+    category: 'Limits',
+  },
+  {
+    value: 'dao_ai.middleware.create_tool_retry_middleware',
+    label: 'Tool Retry',
+    description: 'Retry failed tool calls with exponential backoff',
+    category: 'Retry',
+  },
+  {
+    value: 'dao_ai.middleware.create_model_retry_middleware',
+    label: 'Model Retry',
+    description: 'Retry failed model calls with exponential backoff',
+    category: 'Retry',
+  },
+  {
+    value: 'dao_ai.middleware.create_context_editing_middleware',
+    label: 'Context Editing',
+    description: 'Clear older tool outputs when token limits reached',
+    category: 'Processing',
+  },
+  {
+    value: 'dao_ai.middleware.create_pii_middleware',
+    label: 'PII Protection',
+    description: 'Detect and handle personally identifiable information',
+    category: 'Privacy',
+  },
+  {
     value: 'custom',
     label: 'Custom Factory...',
     description: 'Custom middleware factory function',
@@ -130,6 +167,131 @@ interface InterruptToolEntry {
   toolName: string;
   reviewPrompt: string;
   allowedDecisions: string[]; // approve, edit, reject
+}
+
+// Entry for tool selection with choice between configured tools or manual input
+interface ToolSelectionEntry {
+  id: string;
+  isManual: boolean;
+  toolRef: string;   // Key reference to configured tool
+  toolName: string;  // Manual tool name string
+}
+
+/**
+ * Parse a tool reference from middleware args.
+ * Handles multiple formats:
+ * 1. String with __REF__ prefix (internal reference)
+ * 2. String with * prefix (imported YAML reference - not usually seen after parsing)
+ * 3. Plain string (tool name)
+ * 4. Object (resolved YAML alias - the full ToolModel)
+ */
+function parseToolReference(
+  toolArg: any, 
+  configuredTools: Record<string, any>,
+  id: string = 'tool_0'
+): ToolSelectionEntry {
+  // Case 1: String with __REF__ prefix (internal)
+  if (typeof toolArg === 'string' && toolArg.startsWith('__REF__')) {
+    const refName = toolArg.substring(7);
+    return {
+      id,
+      isManual: false,
+      toolRef: refName,
+      toolName: '',
+    };
+  }
+  
+  // Case 2: String with * prefix (rarely seen after YAML parsing, but handle it)
+  if (typeof toolArg === 'string' && toolArg.startsWith('*')) {
+    const refName = toolArg.substring(1);
+    return {
+      id,
+      isManual: false,
+      toolRef: refName,
+      toolName: '',
+    };
+  }
+  
+  // Case 3: Plain string (tool name)
+  if (typeof toolArg === 'string') {
+    // Check if this string matches a configured tool key
+    if (configuredTools[toolArg]) {
+      return {
+        id,
+        isManual: false,
+        toolRef: toolArg,
+        toolName: '',
+      };
+    }
+    // Check if this string matches a configured tool's name field
+    const matchedEntry = Object.entries(configuredTools).find(
+      ([, tool]) => tool?.name === toolArg
+    );
+    if (matchedEntry) {
+      return {
+        id,
+        isManual: false,
+        toolRef: matchedEntry[0],
+        toolName: '',
+      };
+    }
+    // Manual tool name
+    return {
+      id,
+      isManual: true,
+      toolRef: '',
+      toolName: toolArg,
+    };
+  }
+  
+  // Case 4: Object (resolved YAML alias - this is a ToolModel)
+  if (typeof toolArg === 'object' && toolArg !== null) {
+    // Try to find which configured tool key matches this object
+    const toolName = toolArg.name;
+    
+    // First, try exact object match
+    const exactMatch = Object.entries(configuredTools).find(
+      ([, tool]) => JSON.stringify(tool) === JSON.stringify(toolArg)
+    );
+    if (exactMatch) {
+      return {
+        id,
+        isManual: false,
+        toolRef: exactMatch[0],
+        toolName: '',
+      };
+    }
+    
+    // Next, try matching by tool name
+    if (toolName) {
+      const nameMatch = Object.entries(configuredTools).find(
+        ([, tool]) => tool?.name === toolName
+      );
+      if (nameMatch) {
+        return {
+          id,
+          isManual: false,
+          toolRef: nameMatch[0],
+          toolName: '',
+        };
+      }
+      // Fall back to using the tool name as manual entry
+      return {
+        id,
+        isManual: true,
+        toolRef: '',
+        toolName: toolName,
+      };
+    }
+  }
+  
+  // Fallback: treat as manual with string representation
+  return {
+    id,
+    isManual: true,
+    toolRef: '',
+    toolName: String(toolArg),
+  };
 }
 
 interface MiddlewareFormData {
@@ -162,7 +324,6 @@ interface MiddlewareFormData {
   
   // HITL parameters
   hitlInterruptTools: InterruptToolEntry[];
-  hitlDescriptionPrefix: string;
   
   // Assert/Suggest/Refine common params
   assertConstraint: string; // Python reference
@@ -180,6 +341,50 @@ interface MiddlewareFormData {
   refineMaxIterations: number;
   refineModel: string; // Optional LLM ref
   refineMiddlewareName: string;
+  
+  // Tool Call Limit parameters
+  toolCallLimitTool: string; // Tool ref key, empty = global limit
+  toolCallLimitThreadLimit: number | null;
+  toolCallLimitRunLimit: number | null;
+  toolCallLimitExitBehavior: 'continue' | 'error' | 'end';
+  
+  // Model Call Limit parameters
+  modelCallLimitThreadLimit: number | null;
+  modelCallLimitRunLimit: number | null;
+  modelCallLimitExitBehavior: 'error' | 'end';
+  
+  // Tool Retry parameters
+  toolRetryMaxRetries: number;
+  toolRetryBackoffFactor: number;
+  toolRetryInitialDelay: number;
+  toolRetryMaxDelay: number | null;
+  toolRetryJitter: boolean;
+  toolRetryTools: string[]; // Array of tool ref keys
+  toolRetryOnFailure: 'continue' | 'error';
+  
+  // Model Retry parameters
+  modelRetryMaxRetries: number;
+  modelRetryBackoffFactor: number;
+  modelRetryInitialDelay: number;
+  modelRetryMaxDelay: number | null;
+  modelRetryJitter: boolean;
+  modelRetryOnFailure: 'continue' | 'error';
+  
+  // Context Editing parameters
+  contextEditingTrigger: number;
+  contextEditingKeep: number;
+  contextEditingClearAtLeast: number;
+  contextEditingClearToolInputs: boolean;
+  contextEditingExcludeTools: string[]; // Array of tool ref keys
+  contextEditingPlaceholder: string;
+  contextEditingTokenCountMethod: 'approximate' | 'model';
+  
+  // PII Middleware parameters
+  piiType: string;
+  piiStrategy: 'redact' | 'mask' | 'hash' | 'block';
+  piiApplyToInput: boolean;
+  piiApplyToOutput: boolean;
+  piiApplyToToolResults: boolean;
   
   // Generic args (only for custom)
   genericArgs: Record<string, any>;
@@ -203,7 +408,6 @@ const defaultFormData: MiddlewareFormData = {
   summaryMaxMessagesBefore: 10,
   summaryUsesTokens: true,
   hitlInterruptTools: [],
-  hitlDescriptionPrefix: '',
   assertConstraint: '',
   assertMaxRetries: 3,
   assertOnFailure: 'error',
@@ -217,6 +421,51 @@ const defaultFormData: MiddlewareFormData = {
   refineMaxIterations: 3,
   refineModel: '',
   refineMiddlewareName: '',
+  
+  // Tool Call Limit defaults
+  toolCallLimitTool: '', // Empty = global limit
+  toolCallLimitThreadLimit: null,
+  toolCallLimitRunLimit: 10,
+  toolCallLimitExitBehavior: 'continue',
+  
+  // Model Call Limit defaults
+  modelCallLimitThreadLimit: null,
+  modelCallLimitRunLimit: 50,
+  modelCallLimitExitBehavior: 'end',
+  
+  // Tool Retry defaults
+  toolRetryMaxRetries: 3,
+  toolRetryBackoffFactor: 2.0,
+  toolRetryInitialDelay: 1.0,
+  toolRetryMaxDelay: null,
+  toolRetryJitter: false,
+  toolRetryTools: [] as string[],
+  toolRetryOnFailure: 'continue',
+  
+  // Model Retry defaults
+  modelRetryMaxRetries: 3,
+  modelRetryBackoffFactor: 2.0,
+  modelRetryInitialDelay: 1.0,
+  modelRetryMaxDelay: null,
+  modelRetryJitter: false,
+  modelRetryOnFailure: 'continue',
+  
+  // Context Editing defaults
+  contextEditingTrigger: 100000,
+  contextEditingKeep: 3,
+  contextEditingClearAtLeast: 0,
+  contextEditingClearToolInputs: false,
+  contextEditingExcludeTools: [] as string[],
+  contextEditingPlaceholder: '[cleared]',
+  contextEditingTokenCountMethod: 'approximate',
+  
+  // PII defaults
+  piiType: 'email',
+  piiStrategy: 'redact',
+  piiApplyToInput: true,
+  piiApplyToOutput: false,
+  piiApplyToToolResults: false,
+  
   genericArgs: {},
 };
 
@@ -233,6 +482,9 @@ export default function MiddlewareSection() {
     { value: '', label: 'Select LLM...' },
     ...Object.keys(llms).map(key => ({ value: key, label: key })),
   ];
+  
+  // Tools for middleware that reference tools
+  const tools = config.tools || {};
 
   const handleAdd = () => {
     setEditingMiddleware(null);
@@ -240,7 +492,7 @@ export default function MiddlewareSection() {
     setIsModalOpen(true);
   };
 
-  const parseMiddlewareArgs = (mw: MiddlewareModel): Partial<MiddlewareFormData> => {
+  const parseMiddlewareArgs = (mw: MiddlewareModel, configuredTools: Record<string, any>): Partial<MiddlewareFormData> => {
     const parsed: Partial<MiddlewareFormData> = {};
     const args = mw.args || {};
     
@@ -302,7 +554,6 @@ export default function MiddlewareSection() {
         reviewPrompt: config.review_prompt || '',
         allowedDecisions: config.allowed_decisions || ['approve', 'edit', 'reject'],
       }));
-      parsed.hitlDescriptionPrefix = args.description_prefix || '';
     }
     
     // Assert
@@ -334,6 +585,82 @@ export default function MiddlewareSection() {
       parsed.refineMiddlewareName = args.name || '';
     }
     
+    // Tool Call Limit
+    if (mw.name === 'dao_ai.middleware.create_tool_call_limit_middleware') {
+      if (args.tool) {
+        const toolEntry = parseToolReference(args.tool, configuredTools);
+        // Use toolRef if found, otherwise empty (global)
+        parsed.toolCallLimitTool = toolEntry.toolRef || '';
+      } else {
+        parsed.toolCallLimitTool = '';
+      }
+      parsed.toolCallLimitThreadLimit = args.thread_limit ?? null;
+      parsed.toolCallLimitRunLimit = args.run_limit ?? null;
+      parsed.toolCallLimitExitBehavior = args.exit_behavior || 'continue';
+    }
+    
+    // Model Call Limit
+    if (mw.name === 'dao_ai.middleware.create_model_call_limit_middleware') {
+      parsed.modelCallLimitThreadLimit = args.thread_limit ?? null;
+      parsed.modelCallLimitRunLimit = args.run_limit ?? null;
+      parsed.modelCallLimitExitBehavior = args.exit_behavior || 'end';
+    }
+    
+    // Tool Retry
+    if (mw.name === 'dao_ai.middleware.create_tool_retry_middleware') {
+      parsed.toolRetryMaxRetries = args.max_retries || 3;
+      parsed.toolRetryBackoffFactor = args.backoff_factor || 2.0;
+      parsed.toolRetryInitialDelay = args.initial_delay || 1.0;
+      parsed.toolRetryMaxDelay = args.max_delay ?? null;
+      parsed.toolRetryJitter = args.jitter || false;
+      parsed.toolRetryOnFailure = args.on_failure || 'continue';
+      if (Array.isArray(args.tools)) {
+        // Parse each tool reference and extract the toolRef key
+        parsed.toolRetryTools = args.tools
+          .map((t: any) => parseToolReference(t, configuredTools).toolRef)
+          .filter(Boolean);
+      } else {
+        parsed.toolRetryTools = [];
+      }
+    }
+    
+    // Model Retry
+    if (mw.name === 'dao_ai.middleware.create_model_retry_middleware') {
+      parsed.modelRetryMaxRetries = args.max_retries || 3;
+      parsed.modelRetryBackoffFactor = args.backoff_factor || 2.0;
+      parsed.modelRetryInitialDelay = args.initial_delay || 1.0;
+      parsed.modelRetryMaxDelay = args.max_delay ?? null;
+      parsed.modelRetryJitter = args.jitter || false;
+      parsed.modelRetryOnFailure = args.on_failure || 'continue';
+    }
+    
+    // Context Editing
+    if (mw.name === 'dao_ai.middleware.create_context_editing_middleware') {
+      parsed.contextEditingTrigger = args.trigger || 100000;
+      parsed.contextEditingKeep = args.keep || 3;
+      parsed.contextEditingClearAtLeast = args.clear_at_least || 0;
+      parsed.contextEditingClearToolInputs = args.clear_tool_inputs || false;
+      parsed.contextEditingPlaceholder = args.placeholder || '[cleared]';
+      parsed.contextEditingTokenCountMethod = args.token_count_method || 'approximate';
+      if (Array.isArray(args.exclude_tools)) {
+        // Parse each tool reference and extract the toolRef key
+        parsed.contextEditingExcludeTools = args.exclude_tools
+          .map((t: any) => parseToolReference(t, configuredTools).toolRef)
+          .filter(Boolean);
+      } else {
+        parsed.contextEditingExcludeTools = [];
+      }
+    }
+    
+    // PII Middleware
+    if (mw.name === 'dao_ai.middleware.create_pii_middleware') {
+      parsed.piiType = args.pii_type || 'email';
+      parsed.piiStrategy = args.strategy || 'redact';
+      parsed.piiApplyToInput = args.apply_to_input !== false;
+      parsed.piiApplyToOutput = args.apply_to_output || false;
+      parsed.piiApplyToToolResults = args.apply_to_tool_results || false;
+    }
+    
     // Custom - generic args
     if (mw.name === 'custom' || !PRECONFIGURED_MIDDLEWARE.find(pm => pm.value === mw.name)) {
       parsed.genericArgs = args;
@@ -347,7 +674,7 @@ export default function MiddlewareSection() {
     setEditingMiddleware(key);
     
     const preconfigured = PRECONFIGURED_MIDDLEWARE.find(pm => pm.value === mw.name && pm.value !== 'custom');
-    const parsedArgs = parseMiddlewareArgs(mw);
+    const parsedArgs = parseMiddlewareArgs(mw, tools);
     
     setFormData({
       ...defaultFormData,
@@ -431,7 +758,6 @@ export default function MiddlewareSection() {
       
       return {
         interrupt_on: interruptOn,
-        ...(formData.hitlDescriptionPrefix && { description_prefix: formData.hitlDescriptionPrefix }),
       };
     }
     
@@ -460,6 +786,110 @@ export default function MiddlewareSection() {
         max_iterations: formData.refineMaxIterations,
         ...(formData.refineModel && { refine_model: `*${formData.refineModel}` }),
         ...(formData.refineMiddlewareName && { name: formData.refineMiddlewareName }),
+      };
+    }
+    
+    // Tool Call Limit
+    if (factory === 'dao_ai.middleware.create_tool_call_limit_middleware') {
+      const result: Record<string, any> = {};
+      
+      // If a tool is selected, add it as a reference
+      if (formData.toolCallLimitTool) {
+        result.tool = `__REF__${formData.toolCallLimitTool}`;
+      }
+      
+      if (formData.toolCallLimitThreadLimit !== null) {
+        result.thread_limit = formData.toolCallLimitThreadLimit;
+      }
+      if (formData.toolCallLimitRunLimit !== null) {
+        result.run_limit = formData.toolCallLimitRunLimit;
+      }
+      result.exit_behavior = formData.toolCallLimitExitBehavior;
+      
+      return Object.keys(result).length > 0 ? result : undefined;
+    }
+    
+    // Model Call Limit
+    if (factory === 'dao_ai.middleware.create_model_call_limit_middleware') {
+      const result: Record<string, any> = {};
+      
+      if (formData.modelCallLimitThreadLimit !== null) {
+        result.thread_limit = formData.modelCallLimitThreadLimit;
+      }
+      if (formData.modelCallLimitRunLimit !== null) {
+        result.run_limit = formData.modelCallLimitRunLimit;
+      }
+      result.exit_behavior = formData.modelCallLimitExitBehavior;
+      
+      return Object.keys(result).length > 0 ? result : undefined;
+    }
+    
+    // Tool Retry
+    if (factory === 'dao_ai.middleware.create_tool_retry_middleware') {
+      const result: Record<string, any> = {
+        max_retries: formData.toolRetryMaxRetries,
+        backoff_factor: formData.toolRetryBackoffFactor,
+        initial_delay: formData.toolRetryInitialDelay,
+        jitter: formData.toolRetryJitter,
+        on_failure: formData.toolRetryOnFailure,
+      };
+      
+      if (formData.toolRetryMaxDelay !== null) {
+        result.max_delay = formData.toolRetryMaxDelay;
+      }
+      
+      // Add tools as references
+      if (formData.toolRetryTools.length > 0) {
+        result.tools = formData.toolRetryTools.map(toolRef => `__REF__${toolRef}`);
+      }
+      
+      return result;
+    }
+    
+    // Model Retry
+    if (factory === 'dao_ai.middleware.create_model_retry_middleware') {
+      const result: Record<string, any> = {
+        max_retries: formData.modelRetryMaxRetries,
+        backoff_factor: formData.modelRetryBackoffFactor,
+        initial_delay: formData.modelRetryInitialDelay,
+        jitter: formData.modelRetryJitter,
+        on_failure: formData.modelRetryOnFailure,
+      };
+      
+      if (formData.modelRetryMaxDelay !== null) {
+        result.max_delay = formData.modelRetryMaxDelay;
+      }
+      
+      return result;
+    }
+    
+    // Context Editing
+    if (factory === 'dao_ai.middleware.create_context_editing_middleware') {
+      const result: Record<string, any> = {
+        trigger: formData.contextEditingTrigger,
+        keep: formData.contextEditingKeep,
+        clear_at_least: formData.contextEditingClearAtLeast,
+        clear_tool_inputs: formData.contextEditingClearToolInputs,
+        placeholder: formData.contextEditingPlaceholder,
+        token_count_method: formData.contextEditingTokenCountMethod,
+      };
+      
+      // Add excluded tools as references
+      if (formData.contextEditingExcludeTools.length > 0) {
+        result.exclude_tools = formData.contextEditingExcludeTools.map(toolRef => `__REF__${toolRef}`);
+      }
+      
+      return result;
+    }
+    
+    // PII Middleware
+    if (factory === 'dao_ai.middleware.create_pii_middleware') {
+      return {
+        pii_type: formData.piiType,
+        strategy: formData.piiStrategy,
+        apply_to_input: formData.piiApplyToInput,
+        apply_to_output: formData.piiApplyToOutput,
+        apply_to_tool_results: formData.piiApplyToToolResults,
       };
     }
     
@@ -1225,14 +1655,6 @@ export default function MiddlewareSection() {
                       Add Tool
                     </Button>
                   </div>
-                  <Input
-                    label="Description Prefix (Optional)"
-                    value={formData.hitlDescriptionPrefix}
-                    onChange={(e: ChangeEvent<HTMLInputElement>) => 
-                      setFormData({ ...formData, hitlDescriptionPrefix: e.target.value })
-                    }
-                    placeholder="Prefix for interrupt descriptions"
-                  />
                 </div>
               )}
               
@@ -1375,6 +1797,446 @@ export default function MiddlewareSection() {
                     }
                     placeholder="Optional custom name"
                   />
+                </div>
+              )}
+              
+              {/* Tool Call Limit Middleware */}
+              {formData.selectedFactory === 'dao_ai.middleware.create_tool_call_limit_middleware' && (
+                <div className="space-y-4">
+                  <Select
+                    label="Tool to Limit"
+                    options={[
+                      { value: '', label: 'All Tools (Global Limit)' },
+                      ...Object.entries(tools).map(([key, tool]) => ({
+                        value: key,
+                        label: `${key} (${tool.name})`,
+                      })),
+                    ]}
+                    value={formData.toolCallLimitTool}
+                    onChange={(e: ChangeEvent<HTMLSelectElement>) => 
+                      setFormData({ ...formData, toolCallLimitTool: e.target.value })
+                    }
+                    hint="Select a specific tool or leave empty for global limit"
+                  />
+                  
+                  <div className="grid grid-cols-2 gap-4">
+                    <Input
+                      label="Thread Limit"
+                      type="number"
+                      value={formData.toolCallLimitThreadLimit ?? ''}
+                      onChange={(e: ChangeEvent<HTMLInputElement>) => 
+                        setFormData({ 
+                          ...formData, 
+                          toolCallLimitThreadLimit: e.target.value ? parseInt(e.target.value) : null 
+                        })
+                      }
+                      placeholder="No limit"
+                      hint="Max calls per thread (requires checkpointer)"
+                    />
+                    <Input
+                      label="Run Limit"
+                      type="number"
+                      value={formData.toolCallLimitRunLimit ?? ''}
+                      onChange={(e: ChangeEvent<HTMLInputElement>) => 
+                        setFormData({ 
+                          ...formData, 
+                          toolCallLimitRunLimit: e.target.value ? parseInt(e.target.value) : null 
+                        })
+                      }
+                      placeholder="No limit"
+                      hint="Max calls per single run"
+                    />
+                  </div>
+                  
+                  <Select
+                    label="Exit Behavior"
+                    options={[
+                      { value: 'continue', label: 'Continue - Log and skip further calls' },
+                      { value: 'error', label: 'Error - Raise exception on limit' },
+                      { value: 'end', label: 'End - Gracefully terminate agent' },
+                    ]}
+                    value={formData.toolCallLimitExitBehavior}
+                    onChange={(e: ChangeEvent<HTMLSelectElement>) => 
+                      setFormData({ ...formData, toolCallLimitExitBehavior: e.target.value as 'continue' | 'error' | 'end' })
+                    }
+                    hint="What happens when limit is reached"
+                  />
+                </div>
+              )}
+              
+              {/* Model Call Limit Middleware */}
+              {formData.selectedFactory === 'dao_ai.middleware.create_model_call_limit_middleware' && (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-2 gap-4">
+                    <Input
+                      label="Thread Limit"
+                      type="number"
+                      value={formData.modelCallLimitThreadLimit ?? ''}
+                      onChange={(e: ChangeEvent<HTMLInputElement>) => 
+                        setFormData({ 
+                          ...formData, 
+                          modelCallLimitThreadLimit: e.target.value ? parseInt(e.target.value) : null 
+                        })
+                      }
+                      placeholder="No limit"
+                      hint="Max LLM calls per thread (requires checkpointer)"
+                    />
+                    <Input
+                      label="Run Limit"
+                      type="number"
+                      value={formData.modelCallLimitRunLimit ?? ''}
+                      onChange={(e: ChangeEvent<HTMLInputElement>) => 
+                        setFormData({ 
+                          ...formData, 
+                          modelCallLimitRunLimit: e.target.value ? parseInt(e.target.value) : null 
+                        })
+                      }
+                      placeholder="No limit"
+                      hint="Max LLM calls per single run"
+                    />
+                  </div>
+                  
+                  <Select
+                    label="Exit Behavior"
+                    options={[
+                      { value: 'error', label: 'Error - Raise exception on limit' },
+                      { value: 'end', label: 'End - Gracefully terminate agent' },
+                    ]}
+                    value={formData.modelCallLimitExitBehavior}
+                    onChange={(e: ChangeEvent<HTMLSelectElement>) => 
+                      setFormData({ ...formData, modelCallLimitExitBehavior: e.target.value as 'error' | 'end' })
+                    }
+                    hint="What happens when limit is reached"
+                  />
+                </div>
+              )}
+              
+              {/* Tool Retry Middleware */}
+              {formData.selectedFactory === 'dao_ai.middleware.create_tool_retry_middleware' && (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-3 gap-4">
+                    <Input
+                      label="Max Retries"
+                      type="number"
+                      value={formData.toolRetryMaxRetries}
+                      onChange={(e: ChangeEvent<HTMLInputElement>) => 
+                        setFormData({ ...formData, toolRetryMaxRetries: parseInt(e.target.value) || 3 })
+                      }
+                      hint="Maximum retry attempts"
+                    />
+                    <Input
+                      label="Backoff Factor"
+                      type="number"
+                      step="0.1"
+                      value={formData.toolRetryBackoffFactor}
+                      onChange={(e: ChangeEvent<HTMLInputElement>) => 
+                        setFormData({ ...formData, toolRetryBackoffFactor: parseFloat(e.target.value) || 2.0 })
+                      }
+                      hint="Exponential backoff multiplier"
+                    />
+                    <Input
+                      label="Initial Delay (s)"
+                      type="number"
+                      step="0.1"
+                      value={formData.toolRetryInitialDelay}
+                      onChange={(e: ChangeEvent<HTMLInputElement>) => 
+                        setFormData({ ...formData, toolRetryInitialDelay: parseFloat(e.target.value) || 1.0 })
+                      }
+                      hint="First retry delay in seconds"
+                    />
+                  </div>
+                  
+                  <div className="grid grid-cols-2 gap-4">
+                    <Input
+                      label="Max Delay (s)"
+                      type="number"
+                      step="0.1"
+                      value={formData.toolRetryMaxDelay ?? ''}
+                      onChange={(e: ChangeEvent<HTMLInputElement>) => 
+                        setFormData({ 
+                          ...formData, 
+                          toolRetryMaxDelay: e.target.value ? parseFloat(e.target.value) : null 
+                        })
+                      }
+                      placeholder="No maximum"
+                      hint="Cap on delay between retries"
+                    />
+                    <div className="flex items-end">
+                      <label className="flex items-center space-x-2 text-sm text-slate-300 pb-2">
+                        <input
+                          type="checkbox"
+                          checked={formData.toolRetryJitter}
+                          onChange={(e) => setFormData({ ...formData, toolRetryJitter: e.target.checked })}
+                          className="rounded border-slate-600 bg-slate-700"
+                        />
+                        <span>Add jitter to delays</span>
+                      </label>
+                    </div>
+                  </div>
+                  
+                  <Select
+                    label="On Failure"
+                    options={[
+                      { value: 'continue', label: 'Continue - Proceed with null result' },
+                      { value: 'error', label: 'Error - Raise exception after retries' },
+                    ]}
+                    value={formData.toolRetryOnFailure}
+                    onChange={(e: ChangeEvent<HTMLSelectElement>) => 
+                      setFormData({ ...formData, toolRetryOnFailure: e.target.value as 'continue' | 'error' })
+                    }
+                    hint="What happens after all retries fail"
+                  />
+                  
+                  <MultiSelect
+                    label="Tools to Retry"
+                    options={Object.entries(tools).map(([key, tool]) => ({
+                      value: key,
+                      label: `${key} (${tool.name})`,
+                    }))}
+                    value={formData.toolRetryTools}
+                    onChange={(value) => setFormData({ ...formData, toolRetryTools: value })}
+                    placeholder="All tools (leave empty)"
+                    hint="Select specific tools to retry, or leave empty for all tools"
+                  />
+                </div>
+              )}
+              
+              {/* Model Retry Middleware */}
+              {formData.selectedFactory === 'dao_ai.middleware.create_model_retry_middleware' && (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-3 gap-4">
+                    <Input
+                      label="Max Retries"
+                      type="number"
+                      value={formData.modelRetryMaxRetries}
+                      onChange={(e: ChangeEvent<HTMLInputElement>) => 
+                        setFormData({ ...formData, modelRetryMaxRetries: parseInt(e.target.value) || 3 })
+                      }
+                      hint="Maximum retry attempts"
+                    />
+                    <Input
+                      label="Backoff Factor"
+                      type="number"
+                      step="0.1"
+                      value={formData.modelRetryBackoffFactor}
+                      onChange={(e: ChangeEvent<HTMLInputElement>) => 
+                        setFormData({ ...formData, modelRetryBackoffFactor: parseFloat(e.target.value) || 2.0 })
+                      }
+                      hint="Exponential backoff multiplier"
+                    />
+                    <Input
+                      label="Initial Delay (s)"
+                      type="number"
+                      step="0.1"
+                      value={formData.modelRetryInitialDelay}
+                      onChange={(e: ChangeEvent<HTMLInputElement>) => 
+                        setFormData({ ...formData, modelRetryInitialDelay: parseFloat(e.target.value) || 1.0 })
+                      }
+                      hint="First retry delay in seconds"
+                    />
+                  </div>
+                  
+                  <div className="grid grid-cols-2 gap-4">
+                    <Input
+                      label="Max Delay (s)"
+                      type="number"
+                      step="0.1"
+                      value={formData.modelRetryMaxDelay ?? ''}
+                      onChange={(e: ChangeEvent<HTMLInputElement>) => 
+                        setFormData({ 
+                          ...formData, 
+                          modelRetryMaxDelay: e.target.value ? parseFloat(e.target.value) : null 
+                        })
+                      }
+                      placeholder="No maximum"
+                      hint="Cap on delay between retries"
+                    />
+                    <div className="flex items-end">
+                      <label className="flex items-center space-x-2 text-sm text-slate-300 pb-2">
+                        <input
+                          type="checkbox"
+                          checked={formData.modelRetryJitter}
+                          onChange={(e) => setFormData({ ...formData, modelRetryJitter: e.target.checked })}
+                          className="rounded border-slate-600 bg-slate-700"
+                        />
+                        <span>Add jitter to delays</span>
+                      </label>
+                    </div>
+                  </div>
+                  
+                  <Select
+                    label="On Failure"
+                    options={[
+                      { value: 'continue', label: 'Continue - Return error message' },
+                      { value: 'error', label: 'Error - Raise exception after retries' },
+                    ]}
+                    value={formData.modelRetryOnFailure}
+                    onChange={(e: ChangeEvent<HTMLSelectElement>) => 
+                      setFormData({ ...formData, modelRetryOnFailure: e.target.value as 'continue' | 'error' })
+                    }
+                    hint="What happens after all retries fail"
+                  />
+                </div>
+              )}
+              
+              {/* Context Editing Middleware */}
+              {formData.selectedFactory === 'dao_ai.middleware.create_context_editing_middleware' && (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-3 gap-4">
+                    <Input
+                      label="Trigger Threshold"
+                      type="number"
+                      value={formData.contextEditingTrigger}
+                      onChange={(e: ChangeEvent<HTMLInputElement>) => 
+                        setFormData({ ...formData, contextEditingTrigger: parseInt(e.target.value) || 100000 })
+                      }
+                      hint="Token count that triggers clearing"
+                    />
+                    <Input
+                      label="Keep Recent"
+                      type="number"
+                      value={formData.contextEditingKeep}
+                      onChange={(e: ChangeEvent<HTMLInputElement>) => 
+                        setFormData({ ...formData, contextEditingKeep: parseInt(e.target.value) || 3 })
+                      }
+                      hint="Number of recent tool results to keep"
+                    />
+                    <Input
+                      label="Clear At Least"
+                      type="number"
+                      value={formData.contextEditingClearAtLeast}
+                      onChange={(e: ChangeEvent<HTMLInputElement>) => 
+                        setFormData({ ...formData, contextEditingClearAtLeast: parseInt(e.target.value) || 0 })
+                      }
+                      hint="Minimum tokens to reclaim"
+                    />
+                  </div>
+                  
+                  <div className="grid grid-cols-2 gap-4">
+                    <Input
+                      label="Placeholder Text"
+                      value={formData.contextEditingPlaceholder}
+                      onChange={(e: ChangeEvent<HTMLInputElement>) => 
+                        setFormData({ ...formData, contextEditingPlaceholder: e.target.value })
+                      }
+                      placeholder="[cleared]"
+                      hint="Text to replace cleared content"
+                    />
+                    <Select
+                      label="Token Count Method"
+                      options={[
+                        { value: 'approximate', label: 'Approximate (faster)' },
+                        { value: 'model', label: 'Model (accurate)' },
+                      ]}
+                      value={formData.contextEditingTokenCountMethod}
+                      onChange={(e: ChangeEvent<HTMLSelectElement>) => 
+                        setFormData({ ...formData, contextEditingTokenCountMethod: e.target.value as 'approximate' | 'model' })
+                      }
+                      hint="How to count tokens"
+                    />
+                  </div>
+                  
+                  <div className="flex items-center">
+                    <label className="flex items-center space-x-2 text-sm text-slate-300">
+                      <input
+                        type="checkbox"
+                        checked={formData.contextEditingClearToolInputs}
+                        onChange={(e) => setFormData({ ...formData, contextEditingClearToolInputs: e.target.checked })}
+                        className="rounded border-slate-600 bg-slate-700"
+                      />
+                      <span>Also clear tool call arguments</span>
+                    </label>
+                  </div>
+                  
+                  <MultiSelect
+                    label="Exclude Tools"
+                    options={Object.entries(tools).map(([key, tool]) => ({
+                      value: key,
+                      label: `${key} (${tool.name})`,
+                    }))}
+                    value={formData.contextEditingExcludeTools}
+                    onChange={(value) => setFormData({ ...formData, contextEditingExcludeTools: value })}
+                    placeholder="None (clear all tool outputs)"
+                    hint="Tool outputs that should never be cleared"
+                  />
+                </div>
+              )}
+              
+              {/* PII Middleware */}
+              {formData.selectedFactory === 'dao_ai.middleware.create_pii_middleware' && (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-2 gap-4">
+                    <Select
+                      label="PII Type"
+                      options={[
+                        { value: 'email', label: 'Email Addresses' },
+                        { value: 'phone', label: 'Phone Numbers' },
+                        { value: 'ssn', label: 'Social Security Numbers' },
+                        { value: 'credit_card', label: 'Credit Card Numbers' },
+                        { value: 'ip_address', label: 'IP Addresses' },
+                        { value: 'custom', label: 'Custom (requires detector)' },
+                      ]}
+                      value={formData.piiType}
+                      onChange={(e: ChangeEvent<HTMLSelectElement>) => 
+                        setFormData({ ...formData, piiType: e.target.value })
+                      }
+                      required
+                      hint="Type of PII to detect"
+                    />
+                    <Select
+                      label="Strategy"
+                      options={[
+                        { value: 'redact', label: 'Redact - Replace with [REDACTED]' },
+                        { value: 'mask', label: 'Mask - Partial masking (e.g., ****1234)' },
+                        { value: 'hash', label: 'Hash - Replace with hash value' },
+                        { value: 'block', label: 'Block - Reject the request entirely' },
+                      ]}
+                      value={formData.piiStrategy}
+                      onChange={(e: ChangeEvent<HTMLSelectElement>) => 
+                        setFormData({ ...formData, piiStrategy: e.target.value as 'redact' | 'mask' | 'hash' | 'block' })
+                      }
+                      hint="How to handle detected PII"
+                    />
+                  </div>
+                  
+                  <div className="p-3 bg-slate-900/50 rounded-lg border border-slate-700">
+                    <label className="block text-sm font-medium text-slate-300 mb-3">Apply To</label>
+                    <div className="flex items-center space-x-6">
+                      <label className="flex items-center space-x-2 text-sm text-slate-300">
+                        <input
+                          type="checkbox"
+                          checked={formData.piiApplyToInput}
+                          onChange={(e) => setFormData({ ...formData, piiApplyToInput: e.target.checked })}
+                          className="rounded border-slate-600 bg-slate-700"
+                        />
+                        <span>User Input</span>
+                      </label>
+                      <label className="flex items-center space-x-2 text-sm text-slate-300">
+                        <input
+                          type="checkbox"
+                          checked={formData.piiApplyToOutput}
+                          onChange={(e) => setFormData({ ...formData, piiApplyToOutput: e.target.checked })}
+                          className="rounded border-slate-600 bg-slate-700"
+                        />
+                        <span>Agent Output</span>
+                      </label>
+                      <label className="flex items-center space-x-2 text-sm text-slate-300">
+                        <input
+                          type="checkbox"
+                          checked={formData.piiApplyToToolResults}
+                          onChange={(e) => setFormData({ ...formData, piiApplyToToolResults: e.target.checked })}
+                          className="rounded border-slate-600 bg-slate-700"
+                        />
+                        <span>Tool Results</span>
+                      </label>
+                    </div>
+                  </div>
+                  
+                  {formData.piiType === 'custom' && (
+                    <p className="text-xs text-amber-400 bg-amber-900/20 p-2 rounded-lg border border-amber-700/30">
+                      ⚠️ Custom PII types require a Python detector function. Configure this through custom middleware or programmatically.
+                    </p>
+                  )}
                 </div>
               )}
             </div>

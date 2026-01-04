@@ -756,7 +756,7 @@ wheels = [
 
 [[package]]
 name = "dao-ai"
-version = "0.1.1"
+version = "0.1.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "databricks-agents" },
@@ -791,9 +791,9 @@ dependencies = [
     { name = "tomli" },
     { name = "unitycatalog-ai", extra = ["databricks"] },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/53/13/e47748722a3662de206cff71ebd64969f5845bace229e2e2c60062a07f2c/dao_ai-0.1.1.tar.gz", hash = "sha256:4d8bf608f7a8a6fae635fd88a406c9037c414b187e945b37c7760a222970ae51", size = 18372894, upload-time = "2025-12-29T01:29:56.407Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/dd/c6/d5d32acb1a99ee577b437adda565cf60c79b8adc102b98dac1ac6add6962/dao_ai-0.1.4.tar.gz", hash = "sha256:c5535bfa882368e76a705deeec198d2a90d31443b5a8e6fd39bf9290a2edccd8", size = 18415434, upload-time = "2026-01-03T16:09:38.849Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/33/70/7d20e7ad352d4aaacf9251f215c9e85cb9066902c8b0263e8fec6e3e50bf/dao_ai-0.1.1-py3-none-any.whl", hash = "sha256:4dae30a3f76e1ba94c7021d12f6a8fbd3c7199112ebfe251635e75a306570ca7", size = 181085, upload-time = "2025-12-29T01:29:54.476Z" },
+    { url = "https://files.pythonhosted.org/packages/a5/e2/e546948cc52914c8f8e8ae6fa1c1041c72757162fe60e3eadf10c124d305/dao_ai-0.1.4-py3-none-any.whl", hash = "sha256:2325e4a7d412f64eb74b61825c092846d9e6a4f02d686e99eeb53c6969e5fa09", size = 175550, upload-time = "2026-01-03T16:09:36.974Z" },
 ]
 
 [[package]]
@@ -810,7 +810,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "dao-ai", specifier = ">=0.1.1" },
+    { name = "dao-ai", specifier = ">=0.1.4" },
     { name = "databricks-sdk", specifier = ">=0.74.0" },
     { name = "mlflow", extras = ["databricks"], specifier = ">=3.8.1" },
     { name = "python-dotenv", specifier = ">=1.2.1" },
